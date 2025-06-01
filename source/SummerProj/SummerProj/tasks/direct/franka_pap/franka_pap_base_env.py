@@ -1,0 +1,182 @@
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+import gymnasium as gym
+import numpy as np
+import torch
+
+from isaacsim.core.utils.stage import get_current_stage
+from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
+from pxr import UsdGeom
+from abc import abstractmethod
+
+import isaaclab.sim as sim_utils
+from isaaclab.assets import Articulation, RigidObject
+from isaaclab.envs import DirectRLEnv
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.controllers import DifferentialIKController
+from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
+
+from .franka_pap_env_cfg import FrankaPapEnvCfg
+
+class FrankaPapBaseEnv(DirectRLEnv):
+    cfg: FrankaPapEnvCfg
+
+    def __init__(self, cfg: FrankaPapEnvCfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+
+        def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
+            """Compute pose in env-local coordinates"""
+            world_transform = xformable.ComputeLocalToWorldTransform(0)
+            world_pos = world_transform.ExtractTranslation()
+            world_quat = world_transform.ExtractRotationQuat()
+
+            px = world_pos[0] - env_pos[0]
+            py = world_pos[1] - env_pos[1]
+            pz = world_pos[2] - env_pos[2]
+            qx = world_quat.imaginary[0]
+            qy = world_quat.imaginary[1]
+            qz = world_quat.imaginary[2]
+            qw = world_quat.real
+
+            return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
+
+        # Controller
+        self.controller = DifferentialIKController(cfg=self.cfg.controller, 
+                                                    num_envs=self.scene.cfg.num_envs,
+                                                    device=self.scene.device)
+
+        # Physics Limits
+        self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
+        self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
+        self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
+
+        # Robot Grasp Pose
+        stage = get_current_stage()
+        hand_pose = get_env_local_pose(
+            self.scene.env_origins[0],
+            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_link7")),
+            self.device,
+        )
+        lfinger_pose = get_env_local_pose(
+            self.scene.env_origins[0],
+            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_leftfinger")),
+            self.device,
+        )
+        rfinger_pose = get_env_local_pose(
+            self.scene.env_origins[0],
+            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_rightfinger")),
+            self.device,
+        )
+
+        finger_pose = torch.zeros(7, device=self.device)
+        finger_pose[0:3] = (lfinger_pose[0:3] + rfinger_pose[0:3]) / 2.0
+        finger_pose[3:7] = lfinger_pose[3:7]
+        hand_pose_inv_rot, hand_pose_inv_pos = tf_inverse(hand_pose[3:7], hand_pose[0:3])
+
+        robot_local_grasp_pose_rot, robot_local_pose_pos = tf_combine(
+            hand_pose_inv_rot, hand_pose_inv_pos, finger_pose[3:7], finger_pose[0:3]
+        )
+        robot_local_pose_pos += torch.tensor([0, 0.04, 0], device=self.device)
+        self.robot_local_grasp_pos = robot_local_pose_pos.repeat((self.num_envs, 1))
+        self.robot_local_grasp_rot = robot_local_grasp_pose_rot.repeat((self.num_envs, 1))
+
+        self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
+        self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
+        self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]
+        self.object_link_idx = self._object.find_bodies("Object")[0][0]
+
+        # Default goal positions
+        self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
+        self.goal_rot[:, 0] = 1.0
+        self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.goal_pos[:, :] = torch.tensor([0.0, -0.64, 0.54], device=self.device)
+        
+        # Goal marker
+        self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
+
+        # unit tensors
+        self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+        self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+        self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+
+    def _setup_scene(self):
+        self._robot = Articulation(self.cfg.robot)
+        self._object = RigidObject(self.cfg.object)
+
+        self.scene.articulations["robot"] = self._robot
+        self.scene.rigid_objects["object"] = self._object
+
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+
+        # clone and replicate
+        self.scene.clone_environments(copy_from_source=False)
+
+        # add lights
+        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg.func("/World/Light", light_cfg)
+
+    
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        # robot state
+        joint_pos = self._robot.data.default_joint_pos[env_ids] + sample_uniform(
+            -0.125,
+            0.125,
+            (len(env_ids), self._robot.num_joints),
+            self.device,
+        )
+        joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
+        joint_vel = torch.zeros_like(joint_pos)
+        self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
+        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+
+        # goal state
+        self._reset_target_pose(env_ids)
+
+
+    # -- Oxuilary Functions
+    def _reset_target_pose(self, env_ids):
+        # reset goal rotation
+        rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
+        new_rot = randomize_rotation(
+            rand_floats[:, 0], rand_floats[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+        # update goal pose and markers
+        self.goal_rot[env_ids] = new_rot
+        goal_pos = self.goal_pos + self.scene.env_origins
+        self.goal_markers.visualize(goal_pos, self.goal_rot)
+
+
+    @abstractmethod
+    def _pre_physics_step(self, actions):
+        raise NotImplementedError(f"Please implement the '_pre_physics_step' method for {self.__class__.__name__}.")
+
+    @abstractmethod
+    def _apply_action(self):
+        raise NotImplementedError(f"Please implement the '_apply_action' method for {self.__class__.__name__}.")
+
+    @abstractmethod
+    def _get_dones(self):
+        raise NotImplementedError(f"Please implement the '_get_done' method for {self.__class__.__name__}.")
+
+    @abstractmethod
+    def _get_rewards(self):
+        raise NotImplementedError(f"Please implement the '_get_rewards' method for {self.__class__.__name__}.")
+
+    @abstractmethod
+    def _get_observations(self):
+        raise NotImplementedError(f"Please implement the '_get_observation' method for {self.__class__.__name__}.")
+
+
+@torch.jit.script
+def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
+    return quat_mul(
+        quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor)
+    )

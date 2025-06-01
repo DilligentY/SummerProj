@@ -110,9 +110,6 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     robot_entity_cfg.resolve(scene)
     robot = scene["robot"]
 
-    robot_entity_cfg = SceneEntityCfg("robot", joint_names=["panda_joint.*"], body_names=["panda_hand"])
-    robot_entity_cfg.resolve(scene)
-
     if robot.is_fixed_base:
         ee_jacobi_idx = robot_entity_cfg.body_ids[0] - 1
     else:
