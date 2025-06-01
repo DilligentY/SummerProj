@@ -120,7 +120,6 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
 
-    ee_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
     tcp_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/tcp_current"))
     goal_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_goal"))
     traj_marker = VisualizationMarkers(point_marker_cfg.replace(prim_path="Visuals/ee_traj"))
@@ -137,7 +136,12 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
     hand_link_idx = robot.find_bodies("panda_link7")[0][0]
     left_finger_link_idx = robot.find_bodies("panda_leftfinger")[0][0]
+    left_finger_joint_idx = robot.find_joints("panda_finger_joint1")[0][0]
     right_finger_link_idx = robot.find_bodies("panda_rightfinger")[0][0]
+    right_finger_joint_idx = robot.find_joints("panda_finger_joint2")[0][0]
+    finger_open_joint_pos = torch.full((scene.num_envs, 2), 0.04, device=scene.device)
+    finger_ids = torch.tensor([left_finger_joint_idx, right_finger_joint_idx], device=scene.device)
+
 
     if robot.is_fixed_base:
         jacobi_idx = robot_entity_cfg.body_ids[0] - 1
@@ -163,14 +167,8 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         root_start_w[:, :3], root_start_w[:, 3:7], tcp_start_pose_w[:, :3], tcp_start_pose_w[:, 3:7])
     tcp_start_pose_b = torch.cat((tcp_start_loc_b, tcp_start_rot_b), dim=1).squeeze_(0)
 
-    ee_start = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], :7]
-    ee_start_pos_b, ee_start_rot_b = subtract_frame_transforms(
-        root_start_w[:, :3], root_start_w[:, 3:7], ee_start[:, :3], ee_start[:, 3:7])
-    ee_start_b = torch.cat((ee_start_pos_b, ee_start_rot_b), dim=-1).squeeze_(0)
-
     # Target End-Effector Pose -> Keypoints from the Cube Object
     object_pose_w = object.data.root_state_w[:, :7]
-    # object_pos_e = torch.cat((object_state_w[:, :3] - scene.env_origins[:, :3], object_state_w[:, 3:7]), dim=1)
     goal_keypoints_loc_w = compute_keypoints(object_pose_w, num_keypoints=8)
 
     ee_goals = [0.3, 0.3, 0.3, 0.707, 0, 0.707, 0]
@@ -235,17 +233,16 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         joint_pos_des = diff_ik_controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
     
         robot.set_joint_position_target(joint_pos_des, joint_ids=robot_entity_cfg.joint_ids)
+        robot.set_joint_position_target(finger_open_joint_pos, joint_ids=finger_ids)
         scene.write_data_to_sim()
         sim.step()
         scene.update(sim_dt)
 
-        ee_pose_w = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], :7]
         lfinger_pose_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
         rfinger_pose_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
         tcp_pose_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], torch.tensor([0.0, 0.0, 0.045], device=scene.device))
         tcp_pos_w = torch.cat((tcp_pose_w, lfinger_pose_w[:, 3:7]), dim=1)
 
-        ee_marker.visualize(ee_pose_w[:, :3], ee_pose_w[:, 3:7])
         tcp_marker.visualize(tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
         traj_marker.visualize(optimal_trajectory[:, :3] + scene.env_origins + robot.data.default_root_state[:, :3])
         keypoint_marker.visualize(goal_keypoints_loc_w.squeeze_(0))
