@@ -15,10 +15,12 @@ from pxr import UsdGeom
 from abc import abstractmethod
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation, RigidObject, AssetBase
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.controllers import DifferentialIKController
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import subtract_frame_transforms
 from isaaclab.utils.math import quat_apply, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
@@ -42,37 +44,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
         self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
-
-        # # Robot Grasp Pose
-        # stage = get_current_stage()
-        # hand_pose = get_env_local_pose(
-        #     self.scene.env_origins[0],
-        #     UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_link7")),
-        #     self.device,
-        # )
-        # lfinger_pose = get_env_local_pose(
-        #     self.scene.env_origins[0],
-        #     UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_leftfinger")),
-        #     self.device,
-        # )
-        # rfinger_pose = get_env_local_pose(
-        #     self.scene.env_origins[0],
-        #     UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_rightfinger")),
-        #     self.device,
-        # )
-
-
-        # finger_pose = torch.zeros(7, device=self.device)
-        # finger_pose[0:3] = (lfinger_pose[0:3] + rfinger_pose[0:3]) / 2.0
-        # finger_pose[3:7] = lfinger_pose[3:7]
-        # hand_pose_inv_rot, hand_pose_inv_pos = tf_inverse(hand_pose[3:7], hand_pose[0:3])
-
-        # robot_local_grasp_pose_rot, robot_local_pose_pos = tf_combine(
-        #     hand_pose_inv_rot, hand_pose_inv_pos, finger_pose[3:7], finger_pose[0:3]
-        # )
-        # robot_local_pose_pos += torch.tensor([0, 0.04, 0], device=self.device)
-        # self.robot_local_grasp_pos = robot_local_pose_pos.repeat((self.num_envs, 1))
-        # self.robot_local_grasp_rot = robot_local_grasp_pose_rot.repeat((self.num_envs, 1))
 
         # Joint & Link Index
         self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
@@ -110,10 +81,9 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self._robot
         self.scene.rigid_objects["object"] = self._object
 
-        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
-        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-
+        spawn_ground_plane(prim_path=self.cfg.plane.prim_path, cfg=GroundPlaneCfg(), translation=(0.0, 0.0, -1.05))
+        spawn = self.cfg.table.spawn
+        spawn.func(self.cfg.table.prim_path, spawn, translation=(0.5, 0.0, 0.0), orientation=(0.707, 0.0, 0.0, 0.707))
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
 

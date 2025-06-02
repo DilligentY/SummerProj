@@ -55,6 +55,9 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Keypoints
         self.gt_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
 
+        # Keypoint markers
+        self.keypoints_marker = VisualizationMarkers(self.cfg.keypoints_cfg)
+
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # Keypoints 중, 후보군 선택하는 Action이 되도록 Processing
@@ -87,11 +90,12 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
         joint_pos_des = self.controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
 
-        self._robot.set_joint_position_target(joint_pos_des, joint_ids=self._robot_entity.joint_ids)
+        # self._robot.set_joint_position_target(joint_pos_des, joint_ids=self._robot_entity.joint_ids)
 
     
     def _get_dones(self):
         # 물체가 잘 붙어있는지 Check 떨어지면, 실패 처리
+        self._compute_intermediate_values()
         terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
@@ -156,6 +160,9 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Need to refresh the intermediate values so that _get_observations() can use the latest values
         self._compute_intermediate_values(env_ids)
 
+        # Visualization Keypoints
+        self.keypoints_marker.visualize(self.object_grasp_pos_w[:, :, :3].reshape(-1, 3))
+
     
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
@@ -201,6 +208,12 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
             self.object_local_grasp_rot[env_ids],
             self.object_local_grasp_loc[env_ids],
         )
+
+        # Visualization Keypoints
+        self.keypoints_marker.visualize(self.object_grasp_pos_w[:, :, :3].reshape(-1, 3))
+        
+
+
     
     def _compute_grasp_transforms(
         self,

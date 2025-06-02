@@ -33,7 +33,7 @@ from .franka_pap_env_cfg import FrankaPapEnvCfg
 @configclass
 class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
     # env
-    decimation = 10
+    decimation = 2
     action_space = 12
     observation_space = 47
     state_space = 0
@@ -53,8 +53,14 @@ class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
 
     # keypoints marker
     keypoints_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
-        prim_path="/Visual/keypoint",
-        scale=(0.1, 0.1, 0.1),
+        prim_path="/Visuals/keypoint",
+        markers={
+        "cuboid": sim_utils.CuboidCfg(
+            size=(0.01, 0.01, 0.01),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+        ),
+    }
+        
     )
 
     # reward hyperparameter

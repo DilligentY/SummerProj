@@ -63,7 +63,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
         prim_path="/World/defaultGroundPlane",
         spawn=sim_utils.GroundPlaneCfg(),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -1.05)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
     )
     # lights
     dome_light = AssetBaseCfg(
@@ -72,13 +72,13 @@ class RobotSceneCfg(InteractiveSceneCfg):
     # Table
     table = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 0], rot=[0.707, 0, 0, 0.707]),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 1.05], rot=[0.707, 0, 0, 0.707]),
         spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
     )
     # robot
     robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot",
                                              init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.0),
+            pos=(0.0, 0.0, 1.05),
             joint_pos={
             "panda_joint1": 0.0,
             "panda_joint2": -0.569,
@@ -106,7 +106,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-                pos=(0.2, 0.2, 0.0), rot=(1.0, 0.0, 0.0, 0.0)
+                pos=(0.2, 0.2, 1.05), rot=(1.0, 0.0, 0.0, 0.0)
         ),
     )
     

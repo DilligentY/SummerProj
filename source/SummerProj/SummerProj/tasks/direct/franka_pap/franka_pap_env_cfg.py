@@ -115,26 +115,13 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         ))
 
     # ground plane
-    terrain: TerrainImporterCfg =  TerrainImporterCfg(
-            prim_path="/World/ground",
-            terrain_type="plane",
-            collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=0.0,
-            ),
-        )
-    
-    # plane
     plane = AssetBaseCfg(
         prim_path="/World/GroundPlane",
         init_state=AssetBaseCfg.InitialStateCfg(pos=[0, 0, -1.05]),
         spawn=GroundPlaneCfg(),
     )
     
+    # object
     object: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Object",
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.2, 0.2, 0.0], rot=[1, 0, 0, 0]),
@@ -162,12 +149,13 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
             )
         },
     )
+
     
     # Table
     table = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Table",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.5, 0.0, 0.0), rot=[0.707, 0, 0, 0.707]),
-        spawn=UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 0.0], rot=[0.707, 0, 0, 0.707]),
+        spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
     )
 
     # events
