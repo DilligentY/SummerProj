@@ -21,15 +21,13 @@ from isaaclab.controllers import DifferentialIKController
 from isaaclab.utils.math import subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, quat_apply
 
 from .franka_pap_base_env import FrankaPapBaseEnv
+from .franka_pap_approach_env_cfg import FrankaPapApproachEnvCfg
 
 class FrankaPapApproachEnv(FrankaPapBaseEnv):
     """Franka Pap Approach Environment for the Franka Emika Panda robot."""
-
+    cfg: FrankaPapApproachEnvCfg
     def __init__(self, cfg: FrankaPapBaseEnv, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-
-        # Action and Observation Configurations
-        self.cfg.decimation = 100
 
         # IK controller Commands & Scene Entity
         self._robot_entity = self.cfg.robot_entity
@@ -42,17 +40,17 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
             self.jacobi_idx = self._robot_entity.body_ids[0]
 
         # Object Grasp Local Frame Pose
-        object_local_grasp_pose = torch.zeros((1, 8, 7), device=self.device)
-        self.object_local_grasp_pos = object_local_grasp_pose[:, :, :3].repeat(self.num_envs, 1, 1)
-        self.object_local_grasp_rot = object_local_grasp_pose[:, :, 3:7].repeat(self.num_envs, 1, 1)
+        object_local_grasp_pos = torch.zeros((1, 8, 7), device=self.device)
+        self.object_local_grasp_loc = object_local_grasp_pos[:, :, :3].repeat(self.num_envs, 1, 1)
+        self.object_local_grasp_rot = object_local_grasp_pos[:, :, 3:7].repeat(self.num_envs, 1, 1)
 
         # Robot and Object Grasp Poses
-        self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.object_grasp_rot = torch.zeros((self.num_envs, 8, 4), device=self.device)
-        self.object_grasp_pos = torch.zeros((self.num_envs, 8, 3), device=self.device)
-        self.target_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        self.target_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.robot_grasp_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
+        self.robot_grasp_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
+        self.object_grasp_pos_w = torch.zeros((self.num_envs, 8, 7), device=self.device)
+        self.object_grasp_pos_b = torch.zeros((self.num_envs, 8, 7), device=self.device)
+        self.target_grasp_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
+        self.target_grasp_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
 
         # Keypoints
         self.gt_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
@@ -65,27 +63,29 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         kp_actions = self.actions[:, :8]
         rot_actions = self.actions[:, 8:]
 
+        # Network config에서 마지막단에 softmax 추가하기
         self.target_kp_idx = torch.argmax(kp_actions, dim=1)
-        self.target_grasp_rot = rot_actions / (torch.linalg.norm(rot_actions, dim=1, keepdim=True) + 1e-6)
-        self.target_grasp_pos = self.object_local_grasp_pos[:, self.target_kp_idx, :].clone()
+        self.target_grasp_pos_b[:, :3] = self.object_grasp_pos_b[self.total_env_ids, self.target_kp_idx, :3]
+        self.target_grasp_pos_b[:, 3:7] = rot_actions / (torch.linalg.norm(rot_actions, dim=1, keepdim=True) + 1e-6)
 
-        self.ik_commands[:, :3] = self.target_grasp_pos
-        self.ik_commands[:, 3:7] = self.target_grasp_rot
-        self.controller.set_command(self.ik_commands, self.hand_pos_w, self.hand_rot_w)
+        self.ik_commands[:, :3] = self.target_grasp_pos_b[:, :3]
+        self.ik_commands[:, 3:7] = self.target_grasp_pos_b[:, 3:7]
+        self.controller.set_command(self.ik_commands, self.robot_grasp_pos_b[:, :3], self.robot_grasp_pos_b[:, 3:7])
 
     def _apply_action(self):
         # IK Controller를 통해 Target Joint Positions 계산
-        root_pose_w = self._robot.data.root_state_w[:, :7]
-        hand_pos_w = self._robot.data.body_state_w[:, self.hand_link_idx, :7]
-
-        hand_pos_b, hand_rot_b = subtract_frame_transforms(
-            root_pose_w[:, :3], root_pose_w[:, 3:7], hand_pos_w[:, :3], hand_pos_w[:, 3:7]
-        )
+        root_pos_w = self._robot.data.root_state_w[:, :7]
+        lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
+        rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
+        tcp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
+        
+        tcp_loc_b, tcp_rot_b = subtract_frame_transforms(
+            root_pos_w[:, :3], root_pos_w[:, 3:7], tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
 
         jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, self._robot_entity.joint_ids]
         joint_pos = self._robot.data.joint_pos[:, self._robot_entity.joint_ids]
 
-        joint_pos_des = self.controller.compute(hand_pos_b, hand_rot_b, jacobian, joint_pos)
+        joint_pos_des = self.controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
 
         self._robot.set_joint_position_target(joint_pos_des, joint_ids=self._robot_entity.joint_ids)
 
@@ -108,19 +108,19 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
             / (self.robot_dof_upper_limits - self.robot_dof_lower_limits)
             - 1.0
         )
-        hand_pos = torch.cat((self.hand_pos, self.hand_rot), dim=1)
-        object_pos = torch.cat((self.object_pos, self.object_rot), dim=1)
+        tcp_pos = self.robot_grasp_pos_b
+        object_pos = torch.cat((self.object_loc_b, self.object_rot_b), dim=1)
 
         obs = torch.cat(
             (   
                 # robot joint (9)
                 joint_pos_scaled,
-                # end effector 6D pose w.r.t environment frame (7)
-                hand_pos,
-                # object position and rotiation w.r.t environment frame (7)
+                # end effector 6D pose w.r.t Root frame (7)
+                tcp_pos,
+                # object position and rotiation w.r.t Root frame (7)
                 object_pos,
-                # ground truth object keypoints 3D pose w.r.t the environment frame (24)
-                self.gt_keypoints.view(-1, 24),
+                # ground truth object keypoints 3D pose w.r.t the Root frame (24)
+                self.object_grasp_pos_b[:, :, :3].reshape(-1, 24),
             ), dim=1
         )
 
@@ -160,78 +160,76 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
-        
-        hand_pos = self._robot.data.body_pos_w[env_ids, self.hand_link_idx]
-        hand_rot = self._robot.data.body_quat_w[env_ids, self.hand_link_idx]
-        object_pos = self._object.data.body_pos_w[env_ids, self.object_link_idx]
-        object_rot = self._object.data.body_quat_w[env_ids, self.object_link_idx]
 
-        # data for object with respect to the environment local frame
-        self.object_pos = self._object.data.root_pos_w - self.scene.env_origins
-        self.object_rot = self._object.data.root_quat_w
+        root_pos_w = self._robot.data.root_state_w[env_ids, :7]
+        lfinger_pos_w = self._robot.data.body_state_w[env_ids, self.left_finger_link_idx, :7]
+        rfinger_pos_w = self._robot.data.body_state_w[env_ids, self.right_finger_link_idx, :7]
+        object_loc_w = self._object.data.body_pos_w[env_ids, self.object_link_idx]
+        object_rot_w = self._object.data.body_quat_w[env_ids, self.object_link_idx]
+
+        # data for TCP (world & root Frame)
+        self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
+        robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
+            root_pos_w[:, :3], root_pos_w[:, 3:7], self.robot_grasp_pos_w[:, :3], self .robot_grasp_pos_w[:, 3:7])
+        self.robot_grasp_pos_b = torch.cat((robot_grasp_loc_b, robot_grasp_rot_b), dim=1)
+
+        # data for object with respect to the world & root frame
+        self.object_loc_w = self._object.data.root_pos_w
+        self.object_rot_w = self._object.data.root_quat_w
+        self.object_loc_b, self.object_rot_b = subtract_frame_transforms(
+            root_pos_w[:, :3], root_pos_w[:, 3:7], self.object_loc_w, self.object_rot_w
+        )
         self.object_velocities = self._object.data.root_vel_w
         self.object_linvel = self._object.data.root_lin_vel_w
         self.object_angvel = self._object.data.root_ang_vel_w
 
-        # data for end effector
-        self.hand_pos = hand_pos - self.scene.env_origins[env_ids]
-        self.hand_rot = hand_rot
-        self.hand_pos_w = hand_pos
-        self.hand_rot_w = hand_rot
+        # Keypoint positions in the world frame
+        compute_keypoints(pose=torch.cat((self.object_loc_w, self.object_rot_w), dim=1), out=self.gt_keypoints)
 
-        # Keypoint positions in the environment local frame
-        compute_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1), out=self.gt_keypoints)
+        # Keypoint position in the object frame
+        self.object_local_grasp_loc[:, :, :3] = self.gt_keypoints[:, :, :3].clone() - object_loc_w[:, None, :3]
+        self.object_local_grasp_rot[:, :, :4] = object_rot_w[:, None, :4].clone()
 
-        # Keypoint position in the object local frame
-        self.object_local_grasp_pos[:, :, :3] = self.gt_keypoints[:, :, :3].clone() - self.object_pos[:, None, :3]
-        self.object_local_grasp_rot[:, :, :4] = self.object_rot[:, None, :4].clone()
-
-        # Compute the robot and object world frame grasp transforms using keypoint
+        # Compute the object world frame grasp transforms using keypoint
         (
-            self.robot_grasp_rot[env_ids],
-            self.robot_grasp_pos[env_ids],
-            self.object_grasp_rot[env_ids],
-            self.object_grasp_pos[env_ids],
+            self.object_grasp_pos_w[env_ids],
+            self.object_grasp_pos_b[env_ids],
         ) = self._compute_grasp_transforms(
-            hand_rot,
-            hand_pos,
-            self.robot_local_grasp_rot[env_ids],
-            self.robot_local_grasp_pos[env_ids],
-            object_rot,
-            object_pos,
+            root_pos_w,
+            object_rot_w,
+            object_loc_w,
             self.object_local_grasp_rot[env_ids],
-            self.object_local_grasp_pos[env_ids],
+            self.object_local_grasp_loc[env_ids],
         )
     
-
     def _compute_grasp_transforms(
         self,
-        hand_rot,
-        hand_pos,
-        franka_local_grasp_rot,
-        franka_local_grasp_pos,
+        root_pos,
         object_rot,
-        object_pos,
+        object_loc,
         object_local_grasp_rot,
         object_local_grasp_pos,
     ):
-        # Robot Grasp Pose -> 1개
-        global_franka_rot, global_franka_pos = tf_combine(
-            hand_rot, hand_pos, franka_local_grasp_rot, franka_local_grasp_pos
-        )
 
         # Object Grasp Pose -> K개
         num_batch, num_keypoints = object_local_grasp_pos.shape[:2]
-        global_object_pos = torch.zeros((num_batch, num_keypoints, 3), device=self.device)
-        global_object_rot = torch.zeros((num_batch, num_keypoints, 4), device=self.device)
+        global_object_pos = torch.zeros((num_batch, num_keypoints, 7), device=self.device)
+        local_object_pos = torch.zeros((num_batch, num_keypoints, 7), device=self.device)
         for i in range(num_keypoints):
-            global_object_rot_i, global_object_pos_i = tf_combine(
-                object_rot, object_pos, object_local_grasp_rot[:, i, :], object_local_grasp_pos[:, i, :]
+            global_object_rot_i, global_object_loc_i = tf_combine(
+                object_rot, object_loc, object_local_grasp_rot[:, i, :], object_local_grasp_pos[:, i, :]
             )
-            global_object_rot[:, i, :] = global_object_rot_i
-            global_object_pos[:, i, :] = global_object_pos_i
+            global_object_pos[:, i, :3] = global_object_loc_i
+            global_object_pos[:, i, 3:7] = global_object_rot_i
 
-        return global_franka_rot, global_franka_pos, global_object_rot, global_object_pos
+            local_object_loc_i, local_object_rot_i = subtract_frame_transforms(
+                root_pos[:, :3], root_pos[:, 3:7], global_object_loc_i, global_object_rot_i
+            )
+
+            local_object_pos[:, i, :3] = local_object_loc_i
+            local_object_pos[:, i, 3:7] = local_object_rot_i
+        
+        return global_object_pos, local_object_pos
 
 
 
@@ -272,3 +270,11 @@ def compute_keypoints(
         out[:, i, :] = pose[:, :3] + quat_apply(pose[:, 3:7], corner)
 
     return out
+
+@torch.jit.script
+def calculate_robot_tcp(lfinger_pose_w: torch.Tensor, 
+                        rfinger_pose_w: torch.Tensor, 
+                        offset: torch.Tensor) -> torch.Tensor:
+    tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
+
+    return torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)

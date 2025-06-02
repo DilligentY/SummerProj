@@ -165,7 +165,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
     tcp_start_loc_b, tcp_start_rot_b = subtract_frame_transforms(
         root_start_w[:, :3], root_start_w[:, 3:7], tcp_start_pose_w[:, :3], tcp_start_pose_w[:, 3:7])
-    tcp_start_pose_b = torch.cat((tcp_start_loc_b, tcp_start_rot_b), dim=1).squeeze_(0)
+    tcp_start_pose_b = torch.cat((tcp_start_loc_b, tcp_start_rot_b), dim=1)
 
     # Target End-Effector Pose -> Keypoints from the Cube Object
     object_pose_w = object.data.root_state_w[:, :7]
@@ -175,7 +175,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     ee_goals = torch.tensor(ee_goals, device=scene.device)
     
     # Motion Planning : RRT
-    motion_planner = RRTWrapper(start=tcp_start_pose_b, goal=ee_goals, env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
+    motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=ee_goals, env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
     optimal_trajectory = motion_planner.plan()
     
     ik_commands = torch.zeros(scene.num_envs, diff_ik_controller.action_dim, device=scene.device)
@@ -183,7 +183,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     ik_commands[:, 3:] = optimal_trajectory[0, 3:7]
 
     diff_ik_controller.reset()
-    diff_ik_controller.set_command(ik_commands, tcp_start_pose_w[:, :3], tcp_start_pose_w[:, 3:7])
+    diff_ik_controller.set_command(ik_commands, tcp_start_pose_b[:3], tcp_start_pose_b[3:7])
     while simulation_app.is_running():
 
         # Get the root & joint Pose in world frame
@@ -221,7 +221,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
                 scene.reset()
                 print("[INFO]: Resetting robot state...")
             ik_commands[:, :] = optimal_trajectory[i, :]
-            diff_ik_controller.set_command(ik_commands, tcp_pose_w[:, :3], tcp_pose_w[:, 3:7])
+            diff_ik_controller.set_command(ik_commands, tcp_pose_b[:, :3], tcp_pose_b[:, 3:7])
 
         # Compute Jacobian
         jacobian = robot.root_physx_view.get_jacobians()[:, jacobi_idx, :, robot_entity_cfg.joint_ids]

@@ -20,7 +20,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.controllers import DifferentialIKController
 from isaaclab.utils.math import subtract_frame_transforms
-from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
+from isaaclab.utils.math import quat_apply, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
 from .franka_pap_env_cfg import FrankaPapEnvCfg
 
@@ -30,23 +30,10 @@ class FrankaPapBaseEnv(DirectRLEnv):
     def __init__(self, cfg: FrankaPapEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
-            """Compute pose in env-local coordinates"""
-            world_transform = xformable.ComputeLocalToWorldTransform(0)
-            world_pos = world_transform.ExtractTranslation()
-            world_quat = world_transform.ExtractRotationQuat()
+        # Total env ids
+        self.total_env_ids = torch.arange(self.num_envs, device=self.device)
 
-            px = world_pos[0] - env_pos[0]
-            py = world_pos[1] - env_pos[1]
-            pz = world_pos[2] - env_pos[2]
-            qx = world_quat.imaginary[0]
-            qy = world_quat.imaginary[1]
-            qz = world_quat.imaginary[2]
-            qw = world_quat.real
-
-            return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
-
-        # Controller
+        # IK Controller
         self.controller = DifferentialIKController(cfg=self.cfg.controller, 
                                                     num_envs=self.scene.cfg.num_envs,
                                                     device=self.scene.device)
@@ -56,40 +43,51 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
         self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
 
-        # Robot Grasp Pose
-        stage = get_current_stage()
-        hand_pose = get_env_local_pose(
-            self.scene.env_origins[0],
-            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_link7")),
-            self.device,
-        )
-        lfinger_pose = get_env_local_pose(
-            self.scene.env_origins[0],
-            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_leftfinger")),
-            self.device,
-        )
-        rfinger_pose = get_env_local_pose(
-            self.scene.env_origins[0],
-            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_rightfinger")),
-            self.device,
-        )
+        # # Robot Grasp Pose
+        # stage = get_current_stage()
+        # hand_pose = get_env_local_pose(
+        #     self.scene.env_origins[0],
+        #     UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_link7")),
+        #     self.device,
+        # )
+        # lfinger_pose = get_env_local_pose(
+        #     self.scene.env_origins[0],
+        #     UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_leftfinger")),
+        #     self.device,
+        # )
+        # rfinger_pose = get_env_local_pose(
+        #     self.scene.env_origins[0],
+        #     UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/panda_rightfinger")),
+        #     self.device,
+        # )
 
-        finger_pose = torch.zeros(7, device=self.device)
-        finger_pose[0:3] = (lfinger_pose[0:3] + rfinger_pose[0:3]) / 2.0
-        finger_pose[3:7] = lfinger_pose[3:7]
-        hand_pose_inv_rot, hand_pose_inv_pos = tf_inverse(hand_pose[3:7], hand_pose[0:3])
 
-        robot_local_grasp_pose_rot, robot_local_pose_pos = tf_combine(
-            hand_pose_inv_rot, hand_pose_inv_pos, finger_pose[3:7], finger_pose[0:3]
-        )
-        robot_local_pose_pos += torch.tensor([0, 0.04, 0], device=self.device)
-        self.robot_local_grasp_pos = robot_local_pose_pos.repeat((self.num_envs, 1))
-        self.robot_local_grasp_rot = robot_local_grasp_pose_rot.repeat((self.num_envs, 1))
+        # finger_pose = torch.zeros(7, device=self.device)
+        # finger_pose[0:3] = (lfinger_pose[0:3] + rfinger_pose[0:3]) / 2.0
+        # finger_pose[3:7] = lfinger_pose[3:7]
+        # hand_pose_inv_rot, hand_pose_inv_pos = tf_inverse(hand_pose[3:7], hand_pose[0:3])
 
+        # robot_local_grasp_pose_rot, robot_local_pose_pos = tf_combine(
+        #     hand_pose_inv_rot, hand_pose_inv_pos, finger_pose[3:7], finger_pose[0:3]
+        # )
+        # robot_local_pose_pos += torch.tensor([0, 0.04, 0], device=self.device)
+        # self.robot_local_grasp_pos = robot_local_pose_pos.repeat((self.num_envs, 1))
+        # self.robot_local_grasp_rot = robot_local_grasp_pose_rot.repeat((self.num_envs, 1))
+
+        # Joint & Link Index
         self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
         self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
+        self.left_finger_joint_idx = self._robot.find_joints("panda_finger_joint1")[0][0]
         self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]
+        self.right_finger_joint_idx = self._robot.find_joints("panda_finger_joint2")[0][0]
         self.object_link_idx = self._object.find_bodies("Object")[0][0]
+        self.finger_open_joint_pos = torch.full((self.scene.num_envs, 2), 0.04, device=self.scene.device)
+
+        # Default TCP Pose
+        self.tcp_offset = torch.tensor([0.0, 0.0, 0.045], device=self.device).repeat([self.scene.num_envs, 1])
+        lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
+        rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
+        self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
 
         # Default goal positions
         self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
@@ -138,7 +136,7 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        # goal state
+        # Goal State
         self._reset_target_pose(env_ids)
 
 
@@ -180,3 +178,11 @@ def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
     return quat_mul(
         quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor)
     )
+
+@torch.jit.script
+def calculate_robot_tcp(lfinger_pose_w: torch.Tensor, 
+                        rfinger_pose_w: torch.Tensor, 
+                        offset: torch.Tensor) -> torch.Tensor:
+    tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
+
+    return torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)
