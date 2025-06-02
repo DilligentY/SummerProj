@@ -127,7 +127,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         return {"policy": obs}
 
     
-    def _reset_idx(self, env_ids:torch. Tensor):
+    def _reset_idx(self, env_ids: torch.Tensor):
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
         # robot & scene reset
