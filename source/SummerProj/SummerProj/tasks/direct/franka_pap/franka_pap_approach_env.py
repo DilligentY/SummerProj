@@ -57,6 +57,9 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
         # Keypoint markers
         self.keypoints_marker = VisualizationMarkers(self.cfg.keypoints_cfg)
+        
+        # Taret Keypoint marker
+        self.target_marker = VisualizationMarkers(self.cfg.target_points_cfg)
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -75,6 +78,9 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.ik_commands[:, 3:7] = self.target_grasp_pos_b[:, 3:7]
         self.controller.set_command(self.ik_commands, self.robot_grasp_pos_b[:, :3], self.robot_grasp_pos_b[:, 3:7])
 
+        # Visualization Target key point
+        self.target_marker.visualize(self.ik_commands[:, :3], self.ik_commands[:, 3:7])
+
     def _apply_action(self):
         # IK Controller를 통해 Target Joint Positions 계산
         root_pos_w = self._robot.data.root_state_w[:, :7]
@@ -90,7 +96,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
         joint_pos_des = self.controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
 
-        # self._robot.set_joint_position_target(joint_pos_des, joint_ids=self._robot_entity.joint_ids)
+        self._robot.set_joint_position_target(joint_pos_des, joint_ids=self._robot_entity.joint_ids)
 
     
     def _get_dones(self):
@@ -160,9 +166,6 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Need to refresh the intermediate values so that _get_observations() can use the latest values
         self._compute_intermediate_values(env_ids)
 
-        # Visualization Keypoints
-        self.keypoints_marker.visualize(self.object_grasp_pos_w[:, :, :3].reshape(-1, 3))
-
     
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
@@ -192,57 +195,36 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
         # Keypoint positions in the world frame
         compute_keypoints(pose=torch.cat((self.object_loc_w, self.object_rot_w), dim=1), out=self.gt_keypoints)
+        self.object_grasp_pos_w[env_ids, :, :3] = self.gt_keypoints[env_ids, :, :3].clone()
+        self.object_grasp_pos_w[env_ids, :, 3:7] = object_rot_w[:, None, :]
 
-        # Keypoint position in the object frame
-        self.object_local_grasp_loc[:, :, :3] = self.gt_keypoints[:, :, :3].clone() - object_loc_w[:, None, :3]
-        self.object_local_grasp_rot[:, :, :4] = object_rot_w[:, None, :4].clone()
-
-        # Compute the object world frame grasp transforms using keypoint
-        (
-            self.object_grasp_pos_w[env_ids],
-            self.object_grasp_pos_b[env_ids],
-        ) = self._compute_grasp_transforms(
-            root_pos_w,
-            object_rot_w,
-            object_loc_w,
-            self.object_local_grasp_rot[env_ids],
-            self.object_local_grasp_loc[env_ids],
-        )
+        # Compute the object grasp transforms w.r.t root frame using keypoint
+        self.object_grasp_pos_b[env_ids] = self._compute_grasp_transforms(
+                root_pos_w,
+                self.object_grasp_pos_w[env_ids, :, 3:7],
+                self.object_grasp_pos_w[env_ids, :, :3],)
 
         # Visualization Keypoints
         self.keypoints_marker.visualize(self.object_grasp_pos_w[:, :, :3].reshape(-1, 3))
+        self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
         
-
-
     
     def _compute_grasp_transforms(
         self,
-        root_pos,
-        object_rot,
-        object_loc,
-        object_local_grasp_rot,
-        object_local_grasp_pos,
+        root_pos: torch.Tensor,
+        object_global_grasp_rot: torch.Tensor,
+        object_global_grasp_loc: torch.Tensor,
     ):
 
         # Object Grasp Pose -> K개
-        num_batch, num_keypoints = object_local_grasp_pos.shape[:2]
-        global_object_pos = torch.zeros((num_batch, num_keypoints, 7), device=self.device)
-        local_object_pos = torch.zeros((num_batch, num_keypoints, 7), device=self.device)
-        for i in range(num_keypoints):
-            global_object_rot_i, global_object_loc_i = tf_combine(
-                object_rot, object_loc, object_local_grasp_rot[:, i, :], object_local_grasp_pos[:, i, :]
-            )
-            global_object_pos[:, i, :3] = global_object_loc_i
-            global_object_pos[:, i, 3:7] = global_object_rot_i
+        num_keypoints = object_global_grasp_loc.shape[1]
+        root_pos_exp = root_pos[:, None, :].expand(-1, num_keypoints, -1)
 
-            local_object_loc_i, local_object_rot_i = subtract_frame_transforms(
-                root_pos[:, :3], root_pos[:, 3:7], global_object_loc_i, global_object_rot_i
-            )
-
-            local_object_pos[:, i, :3] = local_object_loc_i
-            local_object_pos[:, i, 3:7] = local_object_rot_i
+        local_object_loc, local_object_rot = subtract_frame_transforms(
+            root_pos_exp[:, :, :3], root_pos_exp[:, :, 3:7], object_global_grasp_loc, object_global_grasp_rot
+        )
         
-        return global_object_pos, local_object_pos
+        return torch.cat((local_object_loc, local_object_rot), dim=-1)
 
 
 

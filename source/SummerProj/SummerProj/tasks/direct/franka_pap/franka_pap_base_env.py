@@ -69,6 +69,9 @@ class FrankaPapBaseEnv(DirectRLEnv):
         # Goal marker
         self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
 
+        # Tcp marker
+        self.tcp_marker = VisualizationMarkers(self.cfg.tcp_cfg)
+
         # unit tensors
         self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))

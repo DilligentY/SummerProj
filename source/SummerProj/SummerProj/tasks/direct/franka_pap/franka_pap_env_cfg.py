@@ -4,13 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from __future__ import annotations
-
-import torch
 from dataclasses import MISSING
-
-from isaacsim.core.utils.stage import get_current_stage
-from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
-from pxr import UsdGeom
 
 import isaaclab.sim as sim_utils
 import isaaclab.envs.mdp as mdp
@@ -21,12 +15,11 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.markers import VisualizationMarkersCfg
-from isaaclab.sim import SimulationCfg
-from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
-from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg
 from isaaclab.controllers import DifferentialIKControllerCfg
 
 
@@ -139,7 +132,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
             ),
         )
     
-    # goal object
+    # goal object marker
     goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/goal_marker",
         markers={
@@ -148,6 +141,17 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
                 scale=(1.0, 1.0, 1.0),
             )
         },
+    )
+
+    # TCP marker
+    tcp_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+        prim_path="Visuals/TCP_current",
+        markers={
+        "frame": sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
+            scale=(0.1, 0.1, 0.1),
+            )
+        }
     )
 
     
