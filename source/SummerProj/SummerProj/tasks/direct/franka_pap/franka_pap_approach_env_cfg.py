@@ -33,14 +33,14 @@ from .franka_pap_env_cfg import FrankaPapEnvCfg
 @configclass
 class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
     # env
-    decimation = 1
+    decimation = 10
     action_space = 12
     observation_space = 47
     state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 100,
+        dt=1 / 10,
         render_interval=decimation,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
