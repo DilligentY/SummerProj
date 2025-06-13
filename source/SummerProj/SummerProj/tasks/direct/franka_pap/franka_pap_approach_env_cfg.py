@@ -68,7 +68,8 @@ class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
         markers={
         "cuboid": sim_utils.CuboidCfg(
             size=(0.01, 0.01, 0.01),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0),
+                                                        opacity=0.1),
             ),
         }    
     )
