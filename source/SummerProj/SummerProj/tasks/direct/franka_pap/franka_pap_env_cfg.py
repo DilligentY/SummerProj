@@ -18,9 +18,10 @@ from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.markers.config import FRAME_MARKER_CFG
-from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
+from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG, FRANKA_PANDA_CFG
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg
 from isaaclab.controllers import DifferentialIKControllerCfg
+from isaaclab.controllers.joint_impedance import JointImpedanceControllerCfg
 
 
 @configclass
@@ -91,7 +92,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=3.0, replicate_physics=True)
 
-    robot: ArticulationCfg = FRANKA_PANDA_HIGH_PD_CFG.replace(
+    robot: ArticulationCfg = FRANKA_PANDA_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.0),
@@ -166,10 +167,19 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
     events: EventCfg = EventCfg()
 
     # IK contoller
-    controller: DifferentialIKControllerCfg = DifferentialIKControllerCfg(
-        command_type="pose",
-        use_relative_mode= False,
-        ik_method="dls",)
+    # controller: DifferentialIKControllerCfg = DifferentialIKControllerCfg(
+    #     command_type="pose",
+    #     use_relative_mode= False,
+    #     ik_method="dls",)
+    
+    # Joint Impedance controller
+    controller: JointImpedanceControllerCfg = JointImpedanceControllerCfg(
+        command_type="p_abs",
+        dof_pos_offset=None,
+        impedance_mode="variable",
+        inertial_compensation=False,
+        gravity_compensation=False,
+    )
     
     # Scene entities
     robot_entity: SceneEntityCfg = SceneEntityCfg(

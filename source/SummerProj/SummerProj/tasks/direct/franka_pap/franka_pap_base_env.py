@@ -18,7 +18,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, AssetBase
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.controllers import DifferentialIKController
+from isaaclab.controllers.joint_impedance import JointImpedanceController
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import subtract_frame_transforms
@@ -35,17 +35,21 @@ class FrankaPapBaseEnv(DirectRLEnv):
         # Total env ids
         self.total_env_ids = torch.arange(self.num_envs, device=self.device)
 
-        # IK Controller
-        self.controller = DifferentialIKController(cfg=self.cfg.controller, 
-                                                    num_envs=self.scene.cfg.num_envs,
-                                                    device=self.scene.device)
-
         # Physics Limits
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
+        self.robot_dof_stiffness_lower_limits = torch.tensor(self.cfg.controller.stiffness_limits[0], device=self.device)
+        self.robot_dof_stiffness_upper_limits = torch.tensor(self.cfg.controller.stiffness_limits[1], device=self.device)
+        self.robot_dof_damping_lower_limits = torch.tensor(self.cfg.controller.damping_ratio_limits[0], device=self.device)
+        self.robot_dof_damping_upper_limits = torch.tensor(self.cfg.controller.damping_ratio_limits[1], device=self.device)
+        
+        # Action Space
         self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
+        self.robot_stiffness = torch.zeros((self.num_envs, 1), device=self.device)
+        self.robot_damping_ratio = torch.zeros((self.num_envs, 1), device=self.device)
 
         # Joint & Link Index
+        self.joint_idx = self._robot.find_joints("panda_joint.*")
         self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
         self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
         self.left_finger_joint_idx = self._robot.find_joints("panda_finger_joint1")[0][0]
@@ -65,6 +69,14 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.goal_rot[:, 0] = 1.0
         self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.goal_pos[:, :] = torch.tensor([0.0, -0.64, 0.54], device=self.device)
+        
+        # Joint Impedance Controller
+        self.controller = JointImpedanceController(cfg=self.cfg.controller,
+                                                   num_robots=self.num_envs,
+                                                   dof_pos_limits=self._robot.data.soft_joint_pos_limits)
+        # self.controller = DifferentialIKController(cfg=self.cfg.controller, 
+        #                                             num_envs=self.scene.cfg.num_envs,
+        #                                             device=self.scene.device)
         
         # Goal marker
         self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)

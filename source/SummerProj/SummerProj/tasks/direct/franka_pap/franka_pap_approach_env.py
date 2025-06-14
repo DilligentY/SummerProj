@@ -29,28 +29,26 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
     def __init__(self, cfg: FrankaPapBaseEnv, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        # IK controller Commands & Scene Entity
+        # Action and Observation Configurations
+        self.cfg.decimation = 2
+
+        # Controller Commands & Scene Entity
         self._robot_entity = self.cfg.robot_entity
         self._robot_entity.resolve(self.scene)
-
-        self.ik_commands = torch.zeros((self.num_envs, self.controller.action_dim), device=self.device)
-        if self._robot.is_fixed_base:
-            self.jacobi_idx = self._robot_entity.body_ids[0] - 1
-        else:
-            self.jacobi_idx = self._robot_entity.body_ids[0]
+        self.commands = torch.zeros((self.num_envs, self.controller.num_actions), device=self.device)
 
         # Object Grasp Local Frame Pose
-        object_local_grasp_pos = torch.zeros((1, 8, 7), device=self.device)
-        self.object_local_grasp_loc = object_local_grasp_pos[:, :, :3].repeat(self.num_envs, 1, 1)
-        self.object_local_grasp_rot = object_local_grasp_pos[:, :, 3:7].repeat(self.num_envs, 1, 1)
+        object_local_grasp_pose = torch.zeros((1, 8, 7), device=self.device)
+        self.object_local_grasp_pos = object_local_grasp_pose[:, :, :3].repeat(self.num_envs, 1, 1)
+        self.object_local_grasp_rot = object_local_grasp_pose[:, :, 3:7].repeat(self.num_envs, 1, 1)
 
         # Robot and Object Grasp Poses
-        self.robot_grasp_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
-        self.robot_grasp_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
-        self.object_grasp_pos_w = torch.zeros((self.num_envs, 8, 7), device=self.device)
-        self.object_grasp_pos_b = torch.zeros((self.num_envs, 8, 7), device=self.device)
-        self.target_grasp_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
-        self.target_grasp_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
+        self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.object_grasp_rot = torch.zeros((self.num_envs, 8, 4), device=self.device)
+        self.object_grasp_pos = torch.zeros((self.num_envs, 8, 3), device=self.device)
+        self.target_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.target_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
 
         # Keypoints
         self.gt_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
@@ -63,40 +61,47 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # Keypoints 중, 후보군 선택하는 Action이 되도록 Processing
-        # 추가로, Gripper의 Rotation 정보까지 Action으로 추출
-        self.actions = actions.clone()
-        kp_actions = self.actions[:, :8]
-        rot_actions = self.actions[:, 8:]
+        """
+        actions.shape  =  (N, 9)
+        0:7  →  DOF position targets            (rad / m)
+        7    →  공통 Joint-stiffness  Kp        (N·m/rad)
+        8    →  공통 Damping-ratio     ζ        (–)
+        """
+        # ── 1. 슬라이스 & 즉시 in-place clip ──────────────────────────
+        tgt  = actions[:, 0:7].clamp_(self.robot_dof_lower_limits,
+                                    self.robot_dof_upper_limits)
 
-        # Network config에서 마지막단에 softmax 추가하기
-        self.target_kp_idx = torch.argmax(kp_actions, dim=1)
-        self.target_grasp_pos_b[:, :3] = self.object_grasp_pos_b[self.total_env_ids, self.target_kp_idx, :3]
-        self.target_grasp_pos_b[:, 3:7] = rot_actions / (torch.linalg.norm(rot_actions, dim=1, keepdim=True) + 1e-6)
+        kp_s = actions[:, 7].clamp_(self.robot_dof_stiffness_lower_limits[0],
+                                    self.robot_dof_stiffness_upper_limits[0])   # (N,)
+        z_s  = actions[:, 8].clamp_(self.robot_dof_damping_lower_limits[0],
+                                    self.robot_dof_damping_upper_limits[0])     # (N,)
 
-        self.ik_commands[:, :3] = self.target_grasp_pos_b[:, :3]
-        self.ik_commands[:, 3:7] = self.target_grasp_pos_b[:, 3:7]
-        self.controller.set_command(self.ik_commands, self.robot_grasp_pos_b[:, :3], self.robot_grasp_pos_b[:, 3:7])
+        # ── 2. 1 값 → 7 값으로 브로드캐스트(메모리 0 복사) ────────────
+        kp   = kp_s.view(-1, 1).expand(-1, 7)          # (N,7)
+        damp = z_s.view(-1, 1).expand(-1, 7)           # (N,7)
 
-        # Visualization Target key point
-        self.target_marker.visualize(self.ik_commands[:, :3], self.ik_commands[:, 3:7])
-
-    def _apply_action(self):
-        # IK Controller를 통해 Target Joint Positions 계산
-        root_pos_w = self._robot.data.root_state_w[:, :7]
-        lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
-        rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
-        tcp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
+        # ── 3. 로봇 버퍼에 덮어쓰기 ───────────────────────────────────
+        self.robot_dof_targets.copy_(tgt)
+        self.robot_stiffness    .copy_(kp)
+        self.robot_damping_ratio.copy_(damp)
+    
+    def _apply_action(self) -> None:
+        """
+        최종 커맨드 [N×21] 생성 후 Actuator API 호출.
+        """
+        cmd = torch.cat((self.robot_dof_targets,      # (N,7)
+                        self.robot_stiffness,        # (N,7) ← 공통 Kp 복제
+                        self.robot_damping_ratio),   # (N,7) ← 공통 zeta 복제
+                        dim=-1)                     # (N,21)
+        # ==== 커맨드 세팅 ====
+        self.controller.set_command(cmd)
+        torque = self.controller.compute(self.robot_joint_pos,
+                                         self.robot_joint_vel,
+                                         mass_matrix=None,
+                                         gravity=None)
+        self._robot.set_joint_effort_target(torque, joint_ids=self.joint_idx)
         
-        tcp_loc_b, tcp_rot_b = subtract_frame_transforms(
-            root_pos_w[:, :3], root_pos_w[:, 3:7], tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
-
-        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, self._robot_entity.joint_ids]
-        joint_pos = self._robot.data.joint_pos[:, self._robot_entity.joint_ids]
-
-        joint_pos_des = self.controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
-
-        self._robot.set_joint_position_target(joint_pos_des, joint_ids=self._robot_entity.joint_ids)
+        
 
     
     def _get_dones(self):
@@ -143,9 +148,6 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # robot & scene reset
         super()._reset_idx(env_ids)
 
-        # controller reset
-        self.controller.reset(env_ids=env_ids)
-
         # object state
         object_default_state = self._object.data.default_root_state.clone()[env_ids]
         pos_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
@@ -176,6 +178,11 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         rfinger_pos_w = self._robot.data.body_state_w[env_ids, self.right_finger_link_idx, :7]
         object_loc_w = self._object.data.body_pos_w[env_ids, self.object_link_idx]
         object_rot_w = self._object.data.body_quat_w[env_ids, self.object_link_idx]
+        
+        # data for joint
+        self.robot_joint_pos = self._robot.data.joint_pos[env_ids]
+        self.robot_joint_vel = self._robot.data.joint_vel[env_ids]
+        self._robot.data.GRAVITY_VEC_W
 
         # data for TCP (world & root Frame)
         self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
@@ -193,19 +200,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.object_linvel = self._object.data.root_lin_vel_w
         self.object_angvel = self._object.data.root_ang_vel_w
 
-        # Keypoint positions in the world frame
-        compute_keypoints(pose=torch.cat((self.object_loc_w, self.object_rot_w), dim=1), out=self.gt_keypoints)
-        self.object_grasp_pos_w[env_ids, :, :3] = self.gt_keypoints[env_ids, :, :3].clone()
-        self.object_grasp_pos_w[env_ids, :, 3:7] = object_rot_w[:, None, :]
-
-        # Compute the object grasp transforms w.r.t root frame using keypoint
-        self.object_grasp_pos_b[env_ids] = self._compute_grasp_transforms(
-                root_pos_w,
-                self.object_grasp_pos_w[env_ids, :, 3:7],
-                self.object_grasp_pos_w[env_ids, :, :3],)
-
         # Visualization Keypoints
-        self.keypoints_marker.visualize(self.object_grasp_pos_w[:, :, :3].reshape(-1, 3))
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
         
     
