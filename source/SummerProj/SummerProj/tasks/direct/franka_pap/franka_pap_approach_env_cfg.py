@@ -76,8 +76,7 @@ class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
     )
 
     # reward hyperparameter
-    r_const = 1.0
     alpha, beta = 10.0, 4.0
     w_pos = 2.0
-    joint_penalty = 0.05
-    stiffness_penalty = 0.1
+    joint_penalty = 0.005
+    stiffness_penalty = 0.01
