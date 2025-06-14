@@ -127,6 +127,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
         r_pos = 1 - torch.tanh(self.loc_error/std)
         reward = self.cfg.w_pos * r_pos - penalty_action - penalty_move
+        # test
 
         return reward
     
