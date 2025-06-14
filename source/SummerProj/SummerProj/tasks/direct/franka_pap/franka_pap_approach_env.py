@@ -114,7 +114,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         return terminated, truncated
         
     def _get_rewards(self):
-        std = 0.02
+        std = 0.5
         # Action Penalty
         delta_q = self.actions[:, 0:7]                 # [-1,1] 범위 가정
         kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
@@ -131,7 +131,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         return reward
     
     def _get_observations(self):
-        # Object 및 Keypoints와 Robot의 상태를 포함한 Observation vector 생성
+        # Object 및 Robot의 상태를 포함한 Observation vector 생성
         joint_pos_scaled = (
             2.0
             * (self._robot.data.joint_pos - self.robot_dof_lower_limits)
@@ -214,7 +214,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.loc_error = torch.norm(
             self.robot_grasp_pos_b[:, :3] - self.object_loc_b[:, :3], dim=1
         )
-        self.is_object_move = torch.logical_and(self.loc_error < 1e-2,
+        self.is_object_move = torch.logical_and(self.loc_error < 1e-3,
                                                 torch.logical_or(torch.norm(self.object_angvel, dim=1) > 1e-3, 
                                                                  torch.norm(self.object_linvel, dim=1) > 1e-3))
 
