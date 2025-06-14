@@ -43,12 +43,14 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.object_local_grasp_rot = object_local_grasp_pose[:, :, 3:7].repeat(self.num_envs, 1, 1)
 
         # Robot and Object Grasp Poses
-        self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.object_grasp_rot = torch.zeros((self.num_envs, 8, 4), device=self.device)
-        self.object_grasp_pos = torch.zeros((self.num_envs, 8, 3), device=self.device)
-        self.target_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        self.target_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.robot_grasp_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
+        self.robot_grasp_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
+        self.target_grasp_pos_w = torch.zeros((self.num_envs, 4), device=self.device)
+        self.target_grasp_pos_b = torch.zeros((self.num_envs, 3), device=self.device)
+
+        # Object Move Checker
+        self.loc_error = torch.zeros((self.num_envs, 3), device=self.device)
+        self.is_object_move = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # Keypoints
         self.gt_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
@@ -192,32 +194,33 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         rfinger_pos_w = self._robot.data.body_state_w[env_ids, self.right_finger_link_idx, :7]
         
         # data for joint
-        self.robot_joint_pos = self._robot.data.joint_pos[env_ids]
-        self.robot_joint_vel = self._robot.data.joint_vel[env_ids]
+        self.robot_joint_pos[env_ids] = self._robot.data.joint_pos[env_ids]
+        self.robot_joint_vel[env_ids] = self._robot.data.joint_vel[env_ids]
 
         # data for TCP (world & root Frame)
-        self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
+        self.robot_grasp_pos_w[env_ids] = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset[env_ids])
         robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
             root_pos_w[:, :3], root_pos_w[:, 3:7], self.robot_grasp_pos_w[:, :3], self .robot_grasp_pos_w[:, 3:7])
-        self.robot_grasp_pos_b = torch.cat((robot_grasp_loc_b, robot_grasp_rot_b), dim=1)
+        self.robot_grasp_pos_b[env_ids] = torch.cat((robot_grasp_loc_b, robot_grasp_rot_b), dim=1)
 
         # data for object with respect to the world & root frame
-        self.object_loc_w = self._object.data.root_pos_w
-        self.object_rot_w = self._object.data.root_quat_w
-        self.object_loc_b, self.object_rot_b = subtract_frame_transforms(
-            root_pos_w[:, :3], root_pos_w[:, 3:7], self.object_loc_w, self.object_rot_w
+        object_loc_w = self._object.data.root_pos_w[env_ids]
+        object_rot_w = self._object.data.root_quat_w[env_ids]
+        object_loc_b, object_rot_b = subtract_frame_transforms(
+            root_pos_w[:, :3], root_pos_w[:, 3:7], object_loc_w, object_rot_w
         )
-        self.object_velocities = self._object.data.root_vel_w
-        self.object_linvel = self._object.data.root_lin_vel_w
-        self.object_angvel = self._object.data.root_ang_vel_w
+        self.object_pos_w[env_ids] = torch.cat([object_loc_w, object_rot_w], dim=-1)
+        self.object_pos_b[env_ids] = torch.cat([object_loc_b, object_rot_b], dim=-1)
+        self.object_linvel[env_ids] = self._object.data.root_lin_vel_w[env_ids]
+        self.object_angvel[env_ids] = self._object.data.root_ang_vel_w[env_ids]
 
         # Whether Contact
-        self.loc_error = torch.norm(
-            self.robot_grasp_pos_b[:, :3] - self.object_loc_b[:, :3], dim=1
+        self.loc_error[env_ids] = torch.norm(
+            self.robot_grasp_pos_b[env_ids, :3] - object_loc_b[:, :3], dim=1
         )
-        self.is_object_move = torch.logical_and(self.loc_error < 1e-3,
-                                                torch.logical_or(torch.norm(self.object_angvel, dim=1) > 1e-3, 
-                                                                 torch.norm(self.object_linvel, dim=1) > 1e-3))
+        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 1e-3,
+                                                        torch.logical_or(torch.norm(self.object_angvel[env_ids], dim=1) > 1e-3, 
+                                                                         torch.norm(self.object_linvel[env_ids], dim=1) > 1e-3))
 
         # Visualization Keypoints
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])

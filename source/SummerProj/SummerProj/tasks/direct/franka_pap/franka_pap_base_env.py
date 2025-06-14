@@ -54,11 +54,19 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.robot_dof_damping_lower_limits = torch.tensor(self.cfg.controller.damping_ratio_limits[0], device=self.device)
         self.robot_dof_damping_upper_limits = torch.tensor(self.cfg.controller.damping_ratio_limits[1], device=self.device)
 
-
         # Action Space
         self.robot_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_stiffness = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_damping_ratio = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
+
+        # Default Object and Robot Pose
+        self.robot_joint_pos = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
+        self.robot_joint_vel = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
+        self.object_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
+        self.object_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
+        self.object_linvel = torch.zeros((self.num_envs, 3), device=self.device)
+        self.object_angvel = torch.zeros((self.num_envs, 3), device=self.device)
+
 
         # Default TCP Pose
         self.tcp_offset = torch.tensor([0.0, 0.0, 0.045], device=self.device).repeat([self.scene.num_envs, 1])
@@ -77,9 +85,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
                                                    num_robots=self.num_envs,
                                                    dof_pos_limits=self._robot.data.soft_joint_pos_limits[:, 0:self.num_active_joints, :],
                                                    device=self.device)
-        # self.controller = DifferentialIKController(cfg=self.cfg.controller, 
-        #                                             num_envs=self.scene.cfg.num_envs,
-        #                                             device=self.scene.device)
         
         # Goal marker
         # self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
