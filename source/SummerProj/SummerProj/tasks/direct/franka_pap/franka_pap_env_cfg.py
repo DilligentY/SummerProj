@@ -179,8 +179,8 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         impedance_mode="variable",
         stiffness=0.0,
         damping_ratio=0.0,
-        stiffness_limits=(0, 50),
-        damping_ratio_limits=(0, 30),
+        stiffness_limits=(0, 30),
+        damping_ratio_limits=(0, 10),
         inertial_compensation=False,
         gravity_compensation=False,)
     
@@ -189,7 +189,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
     # Action scale
-    joint_res_scale = 0.3
+    joint_res_scale = 0.2
     stiffness_scale = controller.stiffness_limits[1]
     damping_scale = controller.damping_ratio_limits[1]
 
