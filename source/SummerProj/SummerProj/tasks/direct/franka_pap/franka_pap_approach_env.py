@@ -49,7 +49,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.target_grasp_pos_b = torch.zeros((self.num_envs, 3), device=self.device)
 
         # Object Move Checker
-        self.loc_error = torch.zeros((self.num_envs, 3), device=self.device)
+        self.loc_error = torch.zeros(self.num_envs, device=self.device)
         self.is_object_move = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # Keypoints
@@ -141,17 +141,15 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
             / (self.robot_dof_upper_limits - self.robot_dof_lower_limits)
             - 1.0
         )
-        tcp_pos = self.robot_grasp_pos_b
-        object_pos = torch.cat((self.object_loc_b, self.object_rot_b), dim=1)
 
         obs = torch.cat(
             (   
                 # robot joint (7 not 9)
                 joint_pos_scaled[:, 0:self.num_active_joints],
                 # TCP 6D pose w.r.t Root frame (7)
-                tcp_pos,
+                self.robot_grasp_pos_b,
                 # object position and rotiation w.r.t Root frame (7)
-                object_pos,
+                self.object_pos_b,
             ), dim=1
         )
 
