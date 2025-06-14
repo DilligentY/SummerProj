@@ -33,14 +33,15 @@ from .franka_pap_env_cfg import FrankaPapEnvCfg
 @configclass
 class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
     # env
-    decimation = 10
-    action_space = 12
-    observation_space = 47
+    episode_length_s = 10.0
+    decimation = 2
+    action_space = 9
+    observation_space = 21
     state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 10,
+        dt=1 / 100,
         render_interval=decimation,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -76,3 +77,7 @@ class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
 
     # reward hyperparameter
     r_const = 1.0
+    alpha, beta = 10.0, 4.0
+    w_pos = 2.0
+    joint_penalty = 0.05
+    stiffness_penalty = 0.1

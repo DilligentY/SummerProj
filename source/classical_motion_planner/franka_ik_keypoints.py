@@ -106,7 +106,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-                pos=(0.2, 0.2, 1.05), rot=(1.0, 0.0, 0.0, 0.0)
+                pos=(0.5, 0.2, 1.05), rot=(1.0, 0.0, 0.0, 0.0)
         ),
     )
     
@@ -171,10 +171,16 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     object_pose_w = object.data.root_state_w[:, :7]
     goal_keypoints_loc_w = compute_keypoints(object_pose_w, num_keypoints=8)
 
-    ee_goals = [0.3, 0.3, 0.3, 0.707, 0, 0.707, 0]
-    ee_goals = torch.tensor(ee_goals, device=scene.device)
+    target_keypoint_w = select_target_keypoint(goal_keypoints_loc_w, object_pose_w)
+    target_keypoint_loc_b, target_keypoint_rot_b = subtract_frame_transforms(
+        root_start_w[:, :3], root_start_w[:, 3:7], target_keypoint_w[:, :3], target_keypoint_w[:, 3:7]
+    )
+    target_keypoint_b = torch.cat((target_keypoint_loc_b, target_keypoint_rot_b), dim=1)
+
+    ee_goals = torch.tensor([0.3, 0.3, 0.3, 0.707, 0, 0.707, 0], device=scene.device)
     
     # Motion Planning : RRT
+    # motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=target_keypoint_b.squeeze_(0), env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
     motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=ee_goals, env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
     optimal_trajectory = motion_planner.plan()
     
@@ -246,9 +252,9 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         tcp_marker.visualize(tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
         traj_marker.visualize(optimal_trajectory[:, :3] + scene.env_origins + robot.data.default_root_state[:, :3])
         keypoint_marker.visualize(goal_keypoints_loc_w.squeeze_(0))
+        # goal_marker.visualize(target_keypoint_w[:, :3], target_keypoint_w[:, 3:7])
         goal_marker.visualize(ee_goals[:3] + scene.env_origins + robot.data.default_root_state[:, :3], ee_goals[3:7].unsqueeze_(0))
         
-
 
 def main():
     """Main function."""
@@ -267,7 +273,6 @@ def main():
     print("[INFO]: Setup complete...")
     # Run the simulator
     run_simulator(sim, scene)
-
 
 
 def compute_keypoints(
@@ -299,6 +304,12 @@ def compute_keypoints(
 
     return out
 
+
+def select_target_keypoint(points: torch.Tensor, object_pose: torch.Tensor) -> torch.Tensor:
+    rand_idx = torch.randint(0, points.shape[1], (1,),  device=points.device)
+    target_point_loc = points[:, rand_idx, :]
+    
+    return torch.cat((target_point_loc.squeeze_(0), object_pose[:, 3:7]), dim=-1)
 
 
 

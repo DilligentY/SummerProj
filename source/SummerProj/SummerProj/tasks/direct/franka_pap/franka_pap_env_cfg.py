@@ -134,15 +134,15 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         )
     
     # goal object marker
-    goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
-        prim_path="/Visuals/goal_marker",
-        markers={
-            "goal": sim_utils.UsdFileCfg(
-                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-                scale=(1.0, 1.0, 1.0),
-            )
-        },
-    )
+    # goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+    #     prim_path="/Visuals/goal_marker",
+    #     markers={
+    #         "goal": sim_utils.UsdFileCfg(
+    #             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
+    #             scale=(1.0, 1.0, 1.0),
+    #         )
+    #     },
+    # )
 
     # TCP marker
     tcp_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
@@ -174,9 +174,13 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
     
     # Joint Impedance controller
     controller: JointImpedanceControllerCfg = JointImpedanceControllerCfg(
-        command_type="p_abs",
+        command_type="p_rel",
         dof_pos_offset=None,
         impedance_mode="variable",
+        stiffness=0.0,
+        damping_ratio=0.0,
+        stiffness_limits=(0, 30),
+        damping_ratio_limits=(0, 10),
         inertial_compensation=False,
         gravity_compensation=False,
     )
@@ -184,6 +188,11 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
     # Scene entities
     robot_entity: SceneEntityCfg = SceneEntityCfg(
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
+
+    # action scale
+    joint_res_scale = 0.2
+    stiffness_scale = controller.stiffness_limits[1]
+    damping_scale = controller.damping_ratio_limits[1]
 
     # reset
     reset_position_noise = 0.01
