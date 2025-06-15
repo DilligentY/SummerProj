@@ -118,12 +118,10 @@ class FrankaPapBaseEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
         # robot state
-        joint_pos = self._robot.data.default_joint_pos[env_ids] + sample_uniform(
-            -0.125,
-            0.125,
-            (len(env_ids), self._robot.num_joints),
-            self.device,
-        )
+        joint_pos = self._robot.data.default_joint_pos[env_ids]
+        joint_pos[env_ids, 0:self.num_active_joints] += sample_uniform(-0.125, 0.125,
+                                                                       (len(env_ids), self.num_active_joints),
+                                                                       self.device)
         joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)

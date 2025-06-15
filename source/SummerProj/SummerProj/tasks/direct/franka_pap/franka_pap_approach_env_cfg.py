@@ -34,9 +34,9 @@ from .franka_pap_env_cfg import FrankaPapEnvCfg
 class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
     # env
     episode_length_s = 10.0
-    decimation = 2
+    decimation = 3
     action_space = 9
-    observation_space = 21
+    observation_space = 28
     state_space = 0
 
     # simulation
@@ -77,6 +77,6 @@ class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
 
     # reward hyperparameter
     alpha, beta = 10.0, 4.0
-    w_pos = 6.0
-    joint_penalty = 0.005
-    stiffness_penalty = 0.01
+    w_pos = 4.0
+    joint_penalty = 0.1
+    stiffness_penalty = 0.2

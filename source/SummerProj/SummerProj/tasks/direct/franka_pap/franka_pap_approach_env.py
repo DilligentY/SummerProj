@@ -67,7 +67,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         actions.shape  =  (N, 9)
         0:7  →  DOF position targets            (rad / m)
         7    →  공통 Joint-stiffness  Kp        (N·m/rad)
-        8    →  공통 Damping-ratio     ζ        (–)
+        8    →  공통 Damping-ratio     ζ        (-)
         """
         self.actions = actions.clone().clamp(-1.0, 1.0)
         # ── 1. 슬라이스 & 즉시 in-place clip ──────────────────────────
@@ -116,7 +116,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         return terminated, truncated
         
     def _get_rewards(self):
-        std = 0.5
+        std = 0.2
         # Action Penalty
         delta_q = self.actions[:, 0:7]                 # [-1,1] 범위 가정
         kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
@@ -129,7 +129,8 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
         r_pos = 1 - torch.tanh(self.loc_error/std)
         reward = self.cfg.w_pos * r_pos - penalty_action - penalty_move
-        # test
+
+        # print(f"reward of env1 : {reward[0]}")
 
         return reward
     
@@ -142,14 +143,22 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
             - 1.0
         )
 
+        object_loc_tcp, object_rot_tcp = subtract_frame_transforms(
+            self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7], self.object_pos_w[:, :3], self.object_pos_w[:, 3:7]
+        )
+
+        object_pos_tcp = torch.cat([object_loc_tcp, object_rot_tcp], dim=1)
+
         obs = torch.cat(
             (   
-                # robot joint (7 not 9)
+                # robot joint pose (7 not 9)
                 joint_pos_scaled[:, 0:self.num_active_joints],
+                # robot joint velocity (7)
+                self.robot_joint_vel[:, 0:self.num_active_joints],
                 # TCP 6D pose w.r.t Root frame (7)
                 self.robot_grasp_pos_b,
-                # object position and rotiation w.r.t Root frame (7)
-                self.object_pos_b,
+                # object position and rotiation w.r.t TCP Frame (7)
+                object_pos_tcp,
             ), dim=1
         )
 
@@ -198,7 +207,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # data for TCP (world & root Frame)
         self.robot_grasp_pos_w[env_ids] = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset[env_ids])
         robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
-            root_pos_w[:, :3], root_pos_w[:, 3:7], self.robot_grasp_pos_w[:, :3], self .robot_grasp_pos_w[:, 3:7])
+            root_pos_w[:, :3], root_pos_w[:, 3:7], self.robot_grasp_pos_w[env_ids, :3], self.robot_grasp_pos_w[env_ids, 3:7])
         self.robot_grasp_pos_b[env_ids] = torch.cat((robot_grasp_loc_b, robot_grasp_rot_b), dim=1)
 
         # data for object with respect to the world & root frame
@@ -216,7 +225,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - object_loc_b[:, :3], dim=1
         )
-        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 1e-3,
+        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 1e-2,
                                                         torch.logical_or(torch.norm(self.object_angvel[env_ids], dim=1) > 1e-3, 
                                                                          torch.norm(self.object_linvel[env_ids], dim=1) > 1e-3))
 

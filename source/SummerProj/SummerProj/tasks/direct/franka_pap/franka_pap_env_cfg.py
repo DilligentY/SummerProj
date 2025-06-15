@@ -179,7 +179,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         impedance_mode="variable",
         stiffness=0.0,
         damping_ratio=0.0,
-        stiffness_limits=(0, 20),
+        stiffness_limits=(0, 30),
         damping_ratio_limits=(0, 10),
         inertial_compensation=False,
         gravity_compensation=False,)
