@@ -52,11 +52,13 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.target_grasp_pos_w = torch.zeros((self.num_envs, 4), device=self.device)
         self.target_grasp_pos_b = torch.zeros((self.num_envs, 3), device=self.device)
 
-        # Object Move Checker
+        # Object Move Checker & Success Checker
         self.loc_error = torch.zeros(self.num_envs, device=self.device)
         self.rot_error = torch.zeros(self.num_envs, device=self.device)
         self.is_object_move = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.is_reach = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
+        # Domain Randomization Scale
         self.noise_scale = torch.tensor(
                             [self.cfg.reset_position_noise_x, self.cfg.reset_position_noise_y],
                             device=self.device,)
@@ -148,7 +150,8 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
     def _get_dones(self):
         self._compute_intermediate_values()
         truncated = self.episode_length_buf >= self.max_episode_length - 1
-        terminated = self.is_object_move
+        self.success = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-3)
+        terminated = torch.logical_or(self.is_object_move, self.success)
         return terminated, truncated
         
     def _get_rewards(self):
@@ -161,10 +164,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Approach Reward : Distance Nomarlization
         r_pos = 1 - torch.tanh(self.loc_error/0.2)
         # Success Reward : Goal Reach
-        if self.loc_error < 1e-2 and self.rot_error < 1e-3:
-            r_success = torch.tensor(1.0, device=self.device) 
-        else:
-            r_success = torch.tensor(0.0, device=self.device)
+        r_success = self.success.float()
         
         reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * joint_vel_norm - penalty_move + r_success
 
@@ -265,8 +265,9 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - object_loc_b[:, :3], dim=1
         )
-        self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], object_rot_b[:, 3:7])
-        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 1e-1,
+
+        self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], object_rot_b[:, :])
+        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 0.1,
                                                         torch.logical_or(torch.norm(self.object_angvel[env_ids], dim=1) > 1e-3, 
                                                                          torch.norm(self.object_linvel[env_ids], dim=1) > 1e-3))
 

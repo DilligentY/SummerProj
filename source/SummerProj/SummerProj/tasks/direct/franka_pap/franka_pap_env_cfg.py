@@ -195,7 +195,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
     # Action scale
-    loc_res_scale = 0.2
+    loc_res_scale = 0.1
     rot_res_scale = 0.1
     stiffness_scale = controller.stiffness_limits[1]
     damping_scale = controller.damping_ratio_limits[1]
