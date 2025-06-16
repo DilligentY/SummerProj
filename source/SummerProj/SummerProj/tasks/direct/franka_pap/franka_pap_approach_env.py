@@ -102,7 +102,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         filtered_residual = row_pass_filter(self.robot_dof_residual,
                                             self.robot_prev_dof_residual,
                                             self.physics_dt,
-                                            omega=torch.tensor(0.05, device=self.device))
+                                            omega=torch.tensor(50.0, device=self.device))
         
         cmd = torch.cat((filtered_residual,      # (N,7)
                         self.robot_stiffness,        # (N,7) ← 공통 Kp 복제

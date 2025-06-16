@@ -34,7 +34,7 @@ from .franka_pap_env_cfg import FrankaPapEnvCfg
 class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
     # env
     episode_length_s = 10.0
-    decimation = 5
+    decimation = 1
     action_space = 21
     observation_space = 28
     state_space = 0
