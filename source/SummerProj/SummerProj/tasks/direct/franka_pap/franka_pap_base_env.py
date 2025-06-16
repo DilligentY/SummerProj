@@ -19,6 +19,7 @@ from isaaclab.assets import Articulation, RigidObject, AssetBase
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.controllers.joint_impedance import JointImpedanceController
+from isaaclab.controllers import DifferentialIKController
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import subtract_frame_transforms
@@ -55,6 +56,7 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.robot_dof_damping_upper_limits = torch.tensor(self.cfg.controller.damping_ratio_limits[1], device=self.device)
 
         # Action Space
+        self.robot_prev_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_stiffness = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_damping_ratio = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
@@ -66,7 +68,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.object_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
         self.object_linvel = torch.zeros((self.num_envs, 3), device=self.device)
         self.object_angvel = torch.zeros((self.num_envs, 3), device=self.device)
-
 
         # Default TCP Pose
         self.tcp_offset = torch.tensor([0.0, 0.0, 0.045], device=self.device).repeat([self.scene.num_envs, 1])
@@ -85,6 +86,11 @@ class FrankaPapBaseEnv(DirectRLEnv):
                                                    num_robots=self.num_envs,
                                                    dof_pos_limits=self._robot.data.soft_joint_pos_limits[:, 0:self.num_active_joints, :],
                                                    device=self.device)
+        
+        # IK Controller
+        self.ik_controller = DifferentialIKController(cfg=self.cfg.ik_controller,
+                                                      num_envs=self.num_envs,
+                                                      device=self.device)
         
         # Goal marker
         # self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
@@ -117,21 +123,28 @@ class FrankaPapBaseEnv(DirectRLEnv):
     
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
-        # robot state
-        joint_pos = self._robot.data.default_joint_pos[env_ids]
-        joint_pos[env_ids, 0:self.num_active_joints] += sample_uniform(-0.125, 0.125,
-                                                                       (len(env_ids), self.num_active_joints),
-                                                                       self.device)
+        # Initialize robot joint state with pose randomization
+        pos_noise = sample_uniform(
+            -0.125, 0.125,
+            (len(env_ids), self.num_active_joints),
+            self.device,)
+        joint_pos = self._robot.data.default_joint_pos[env_ids].clone()
+        joint_pos[:, :self.num_active_joints] += pos_noise
         joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
+
+        # Initialize Goal State with pose randomization
+        self._reset_target_pose(env_ids)
+
+        # Intilialize Prev Joint Residual state for LPF
+        self.robot_prev_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
+
+        # Publish to simulator
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        # Goal State
-        self._reset_target_pose(env_ids)
 
-
-    # -- Oxuilary Functions
+    # ====================== Oxuilary Functions ================================
     def _reset_target_pose(self, env_ids):
         # reset goal rotation
         rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)

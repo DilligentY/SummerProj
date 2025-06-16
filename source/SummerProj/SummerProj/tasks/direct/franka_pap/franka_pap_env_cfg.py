@@ -118,7 +118,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
     # object
     object: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Object",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.2, 0.2, 0.0], rot=[1, 0, 0, 0]),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.2, 0.0, 0.0], rot=[1, 0, 0, 0]),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
                 scale=(1.0, 1.0, 1.0),
@@ -184,14 +184,21 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         inertial_compensation=False,
         gravity_compensation=False,)
     
+    # IK controller
+    ik_controller = DifferentialIKControllerCfg = DifferentialIKControllerCfg(
+        command_type='pose',
+        use_relative_mode=False,
+        ik_method='dls',)
+    
     # Scene entities
     robot_entity: SceneEntityCfg = SceneEntityCfg(
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
     # Action scale
-    joint_res_scale = 0.2
+    joint_res_scale = 0.3
     stiffness_scale = controller.stiffness_limits[1]
     damping_scale = controller.damping_ratio_limits[1]
 
     # reset
-    reset_position_noise = 0.01
+    reset_position_noise_x = 0.1
+    reset_position_noise_y = 0.2
