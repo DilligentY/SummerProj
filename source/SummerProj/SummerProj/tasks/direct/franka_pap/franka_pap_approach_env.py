@@ -76,9 +76,9 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         actions.shape  =  (N, 9)
-        0 :6     →  DOF position targets       (rad / m)
-        7 :14    →  Joint-stiffness  Kp        (N·m/rad)
-        14:21    →  Damping-ratio     ζ        (-)
+        0:6      →  End Effector 6D Pose for IK             (m)
+        6:13     →  Joint-stiffness for Impedance Control   (N·m/rad)
+        13:20    →  Damping-ratio for Impedance Control     (-)
         """
         self.actions = actions.clone().clamp(-1.0, 1.0)
         # ── 1. 슬라이스 & 즉시 in-place clip ──────────────────────────
@@ -118,7 +118,11 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
                                                    jacobian, 
                                                    self.robot_joint_pos[:, :self.num_active_joints])
         
-        # Desried Joint 각도 발행 
+
+        # ==== 중력 보상을 위한 Impedance Low-Level Control ====
+
+
+        # Desried Joint 각 발행 
         self._robot.set_joint_position_target(joint_pos_des, joint_ids=self.joint_idx[:self.num_active_joints])
 
 

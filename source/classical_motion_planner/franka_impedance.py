@@ -50,10 +50,6 @@ from isaaclab.controllers.joint_impedance import JointImpedanceController, Joint
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
-from RRT.RRT_wrapper import RRTWrapper
-from utils import Env
-
-
 
 @configclass
 class RobotSceneCfg(InteractiveSceneCfg):
@@ -106,14 +102,11 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     point_marker_cfg.markers["cuboid"].size = (0.03, 0.03, 0.03)
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
-    ee_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
 
-    diff_ik_cfg = DifferentialIKControllerCfg(command_type="position", use_relative_mode=False, ik_method="dls")
-    diff_ik_controller = DifferentialIKController(diff_ik_cfg, num_envs=scene.num_envs, device=scene.device)
     joint_imp_cfg = JointImpedanceControllerCfg(command_type="p_rel", 
                                                 impedance_mode="variable",
-                                                stiffness=0.0,
-                                                damping_ratio=0.0,
+                                                stiffness=400.0,
+                                                damping_ratio=1.0,
                                                 inertial_compensation=True, 
                                                 gravity_compensation=True)
     
@@ -124,11 +117,12 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     
     # ---------- 환경 준비 ----------
     n_j          = robot.num_joints           # Franka: 9 (팔7+그리퍼2) 또는 7
-    test_joint   = 3                          # 움직일 관절 번호
-    step_size    = 0.30                       # [rad] 상대 목표
+    test_joint   = 1                          # 움직일 관절 번호
+    step_size    = 1.0                       # [rad] 상대 목표
     sim_len      = 4.0                        # [s] 실험 길이
-    Kp_val       = 20.0                      # 원하는 가상 스프링
-    zeta         = 1.0                        # 감쇠비(=가상 댐퍼 비율)
+    Kp_val       = 50.0                       # Stiffness
+    zeta         = 0.5                        # Damping ratio(=가상 댐퍼 비율)
+    joint_limits = robot.data.joint_limits
 
     # ---------- 슬라이스 정의 ----------
     pos_slice       = slice(0, n_j)
@@ -142,18 +136,17 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
 
     # --- 목표값 설정 -----------------------------------------------------
-    robot.reset()
-    q_home   = robot.data.default_joint_pos.clone()
+    q_init   = robot.data.default_joint_pos.clone()
     q_dot = robot.data.default_joint_vel.clone()
-    q_target = q_home.clone()
+    q_target = q_init.clone()
     q_target[:, test_joint] += step_size
 
     # --- 초기 한 틱 돌려 관성 행렬 준비 -----------------------------------
-    robot.write_joint_state_to_sim(q_home, q_dot)
-    scene.write_data_to_sim(); sim.step(); scene.update(scene.physics_dt)
+    robot.write_joint_state_to_sim(q_init, q_dot)
+    robot.reset()
 
-    # 목표값 만들기 (각 관절 frame 상대각)
-    q_des_rel = torch.zeros_like(q_home)
+    # 목표값 만들기 (각 관절 frame Relative Position)
+    q_des_rel = torch.zeros_like(q_init)
 
     # --- 루프 ------------------------------------------------------------
     log_t, log_q = [], []
@@ -162,14 +155,15 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         
         # 1) 상대 offset 계산
         joint_pos = robot.data.joint_pos
-        q_des_rel[:, test_joint] = q_target[:, test_joint] - joint_pos[:, test_joint]
+        q_des_rel[:, test_joint] =  q_target[:, test_joint] - joint_pos[:, test_joint]
+        print(f"current joint : {joint_pos[:, test_joint]}")
         print(f"offset : {q_des_rel[:, test_joint]}")
 
         # 2) commands 채우기
         commands.zero_()
         commands[:, pos_slice]   = q_des_rel
         commands[:, stiff_slice] = Kp_val           # 모든 관절 동일 Kp
-        commands[:, damp_slice]  = zeta  # Crit.damping
+        commands[:, damp_slice]  = zeta             # Crit.damping
 
         # 3) set_command → compute 순서
         joint_imp_controller.set_command(commands)
@@ -181,93 +175,23 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         )
 
         robot.set_joint_effort_target(tau, joint_ids=joint_ids)
-
         # 4) 물리 스텝
         scene.write_data_to_sim(); sim.step(); scene.update(scene.physics_dt)
         t += scene.physics_dt
 
-        # 5) 로그
+        # 5) 로그 저장
         log_t.append(t)
         log_q.append(robot.data.joint_pos[0, test_joint].item())
 
-    # --- 결과 플롯 (선택) -------------------------------------------------
+    # --- 결과 플롯 -------------------------------------------------
     import matplotlib.pyplot as plt
     plt.plot(log_t, log_q, label="actual")
-    plt.axhline(q_target[0, test_joint].cpu(), ls="--", label="target")
+    plt.axhline(joint_limits[0, test_joint, 0].cpu(), ls="--", label="lower_limit", color='r')
+    plt.axhline(joint_limits[0, test_joint, 1].cpu(), ls="--", label="upper_limit", color='g')
+    plt.axhline(q_target[0, test_joint].cpu(), ls="--", label="target", color='k')
     plt.xlabel("time [s]"); plt.ylabel("joint angle [rad]")
     plt.title("Step response: joint {}".format(test_joint))
     plt.legend(); plt.show()
-
-#    # ---- 상수 정의 ----
-#     amp_val = 0.2                            # 진폭 [rad]  (조인트마다 다르게 쓰고 싶으면 벡터로)
-#     T            = 1.0 / 0.1         # 한 사이클 길이
-#     zero_vel     = torch.zeros_like(q_home)
-#     init_rel     = torch.zeros_like(q_home)
-#     t            = 0.0
-#     last_cycle_i = -1                  # 직전에 실행한 조인트 인덱스
-#     n_j     = robot.num_joints
-
-#     # 루프 전에 한 번만 선언
-#     commands = torch.zeros(scene.num_envs, joint_imp_controller.num_actions,
-#                         device=scene.device)
-#     kp  = 30.0
-#     rho = 5.0
-#     pos_slice       = slice(0, n_j)
-#     stiffness_slice = slice(n_j, 2*n_j)
-#     damping_slice   = slice(2*n_j, 3*n_j)
-
-#     t = 0.0
-#     while simulation_app.is_running():
-
-#         # --- 0) 새 사이클을 시작해야 하나? ---------------------------
-#         cycle_i = int(t // T)          # 몇 번째 사이클인지 (0,1,2,…)
-#         if cycle_i != last_cycle_i:    # 막 새로 시작했다면
-#             print(f"[INFO] start cycle {cycle_i}  (joint {cycle_i % n_j})")
-
-#             # (a) 로봇 상태 초기화
-#             q_des = init_rel.clone()
-#             joint_pos = robot.data.default_joint_pos
-#             joint_vel = robot.data.default_joint_vel
-#             robot.write_joint_state_to_sim(joint_pos, joint_vel)
-#             scene.write_data_to_sim()
-#             sim.step()                 # ➊ reset 상태가 실제 시뮬에 반영되도록 한 틱 돌림
-#             scene.update(sim_dt)
-
-
-#             last_cycle_i = cycle_i           # 갱신
-#             # 이후 계산은 평소처럼 계속 진행
-
-#         # --- 1) 이번 사이클에서 움직일 조인트 -------------------------
-#         active_joint = cycle_i % n_j
-
-#         # --- 2) 원하는 각도(q_des) 계산 --------------------------------
-#         phase = torch.tensor(2 * torch.pi * (t % T) / T, device=scene.device)   # 0 ~ 2π
-#         q_des[:, active_joint] = amp_val * torch.sin(phase)
-#         print("------------------------------------------")
-#         print(f"desred val : {q_des[:, active_joint]}")
-
-#         # --- 3) 컨트롤러 명령 ------------------------------------------
-#         commands.zero_()
-#         commands[:, pos_slice]       = q_des
-#         commands[:, stiffness_slice] = kp
-#         commands[:, damping_slice]   = rho
-#         joint_imp_controller.set_command(commands)
-
-#         # --- 4) 토크 계산 & 적용 ---------------------------------------
-#         torque = joint_imp_controller.compute(
-#             dof_pos = robot.data.joint_pos,
-#             dof_vel = robot.data.joint_vel,
-#             mass_matrix = robot.root_physx_view.get_generalized_mass_matrices()
-#         )
-#         robot.set_joint_effort_target(torque, joint_ids=joint_ids)
-
-#         # --- 5) 시뮬레이터 스텝 ---------------------------------------
-#         scene.write_data_to_sim()
-#         sim.step()
-#         scene.update(sim_dt)
-#         t += sim_dt
-#         print(f"current_val : {robot.data.joint_pos[:, active_joint]}")
-#         print("---------------------------------------------")
 
 
 

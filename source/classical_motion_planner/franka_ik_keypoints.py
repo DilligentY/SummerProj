@@ -76,7 +76,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
     )
     # robot
-    robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot",
+    robot = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot",
                                              init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 1.05),
             joint_pos={
@@ -169,19 +169,17 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
     # Target End-Effector Pose -> Keypoints from the Cube Object
     object_pose_w = object.data.root_state_w[:, :7]
-    goal_keypoints_loc_w = compute_keypoints(object_pose_w, num_keypoints=8)
-
-    target_keypoint_w = select_target_keypoint(goal_keypoints_loc_w, object_pose_w)
-    target_keypoint_loc_b, target_keypoint_rot_b = subtract_frame_transforms(
-        root_start_w[:, :3], root_start_w[:, 3:7], target_keypoint_w[:, :3], target_keypoint_w[:, 3:7]
+    object_loc_b, object_rot_b = subtract_frame_transforms(
+         root_start_w[:, :3], root_start_w[:, 3:7], object_pose_w[:, :3], object_pose_w[:, 3:7]
     )
-    target_keypoint_b = torch.cat((target_keypoint_loc_b, target_keypoint_rot_b), dim=1)
+    object_pose_b = torch.cat([object_loc_b, object_rot_b], dim=1)
+    object_pose_b[:, 3:7] = torch.tensor([0.0, 0.0, 0.0, 0.0], device=scene.device)
+    goal_keypoints_loc_w = compute_keypoints(object_pose_w, num_keypoints=8)
 
     ee_goals = torch.tensor([0.3, 0.3, 0.3, 0.707, 0, 0.707, 0], device=scene.device)
     
     # Motion Planning : RRT
-    # motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=target_keypoint_b.squeeze_(0), env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
-    motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=ee_goals, env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
+    motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=object_pose_b.squeeze_(0), env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
     optimal_trajectory = motion_planner.plan()
     
     ik_commands = torch.zeros(scene.num_envs, diff_ik_controller.action_dim, device=scene.device)
@@ -251,9 +249,8 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
         tcp_marker.visualize(tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
         traj_marker.visualize(optimal_trajectory[:, :3] + scene.env_origins + robot.data.default_root_state[:, :3])
-        keypoint_marker.visualize(goal_keypoints_loc_w.squeeze_(0))
         # goal_marker.visualize(target_keypoint_w[:, :3], target_keypoint_w[:, 3:7])
-        goal_marker.visualize(ee_goals[:3] + scene.env_origins + robot.data.default_root_state[:, :3], ee_goals[3:7].unsqueeze_(0))
+        goal_marker.visualize(object_pose_w[:, :3], object_pose_w[:, 3:7])
         
 
 def main():
