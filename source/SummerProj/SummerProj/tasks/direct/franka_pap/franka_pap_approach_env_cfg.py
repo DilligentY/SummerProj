@@ -13,6 +13,7 @@ from pxr import UsdGeom
 
 import isaaclab.sim as sim_utils
 import isaaclab.envs.mdp as mdp
+from isaaclab_assets import KINOVA_GEN3_N7_CFG
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg, AssetBaseCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from isaaclab.envs import DirectRLEnvCfg
