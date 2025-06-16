@@ -90,8 +90,8 @@ class RobotSceneCfg(InteractiveSceneCfg):
             "panda_joint7": 0.741,
             "panda_finger_joint.*": 0.04,
         },
-        ))
-    
+        ),
+        )
 
 
 
@@ -110,70 +110,165 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
     diff_ik_cfg = DifferentialIKControllerCfg(command_type="position", use_relative_mode=False, ik_method="dls")
     diff_ik_controller = DifferentialIKController(diff_ik_cfg, num_envs=scene.num_envs, device=scene.device)
-    joint_imp_cfg = JointImpedanceControllerCfg(command_type="p_abs", 
+    joint_imp_cfg = JointImpedanceControllerCfg(command_type="p_rel", 
                                                 impedance_mode="variable",
                                                 stiffness=0.0,
                                                 damping_ratio=0.0,
-                                                inertial_compensation=False, 
-                                                gravity_compensation=False)
+                                                inertial_compensation=True, 
+                                                gravity_compensation=True)
     
     joint_imp_controller = JointImpedanceController(cfg=joint_imp_cfg, 
                                                     num_robots=scene.num_envs,
                                                     dof_pos_limits=robot.data.joint_pos_limits,
                                                     device=scene.device)
-
-    # ───────── 초기 자세 저장
-    sim_dt = sim.get_physics_dt()
-    q_home = robot.data.default_joint_pos.clone()                # [env,7]
-    q_dot  = robot.data.default_joint_vel.clone()
-    robot.write_joint_state_to_sim(q_home, q_dot)
-    robot.reset()
-
-    # # Reference Frame : Robot Base Frame
-    # root_start_w = robot.data.root_state_w[:, :7]
-    # ee_start = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], :7]
-    # ee_start_pos_b, ee_start_rot_b = subtract_frame_transforms(
-    #     root_start_w[:, :3], root_start_w[:, 3:7], ee_start[:, :3], ee_start[:, 3:7])
-    # ee_start_b = torch.cat((ee_start_pos_b, ee_start_rot_b), dim=-1).squeeze_(0)
-    # ee_goals = [0.3, 0.3, 0.3, 0.707, 0, 0.707, 0]
-    # ee_goals = torch.tensor(ee_goals, device=scene.device)
-
-    # ───────── 사인파 파라미터
-    t = 0.0
-    amp   = torch.full_like(q_home, 0.5)                         # 0.35 rad 진폭
-    phase = torch.arange(amp.shape[1], device=scene.device) * (torch.pi / 4)
-    freq  = 0.1
     
-    # Control Command
-    n_j = robot.num_joints
-    kp  = 10.0
-    rho = 5.0
+    # ---------- 환경 준비 ----------
+    n_j          = robot.num_joints           # Franka: 9 (팔7+그리퍼2) 또는 7
+    test_joint   = 3                          # 움직일 관절 번호
+    step_size    = 0.30                       # [rad] 상대 목표
+    sim_len      = 4.0                        # [s] 실험 길이
+    Kp_val       = 20.0                      # 원하는 가상 스프링
+    zeta         = 1.0                        # 감쇠비(=가상 댐퍼 비율)
+
+    # ---------- 슬라이스 정의 ----------
     pos_slice       = slice(0, n_j)
-    stiffness_slice = slice(n_j, 2*n_j)
-    damping_slice   = slice(2*n_j, 3*n_j)
-    commands = torch.zeros(scene.num_envs, joint_imp_controller.num_actions, device=scene.device)
-    joint_imp_controller.set_command(commands)
+    stiff_slice     = slice(n_j, 2*n_j)
+    damp_slice      = slice(2*n_j, 3*n_j)
 
-    while simulation_app.is_running():
-        q_des = q_home + amp * torch.sin(2*torch.pi*freq*t + phase)
-        commands[:, pos_slice]       = q_des
-        commands[:, stiffness_slice] = kp
-        commands[:, damping_slice]   = rho
+    # ---------- 명령 버퍼 ----------
+    commands = torch.zeros(scene.num_envs,
+                        joint_imp_controller.num_actions,
+                        device=scene.device)
+
+
+    # --- 목표값 설정 -----------------------------------------------------
+    robot.reset()
+    q_home   = robot.data.default_joint_pos.clone()
+    q_dot = robot.data.default_joint_vel.clone()
+    q_target = q_home.clone()
+    q_target[:, test_joint] += step_size
+
+    # --- 초기 한 틱 돌려 관성 행렬 준비 -----------------------------------
+    robot.write_joint_state_to_sim(q_home, q_dot)
+    scene.write_data_to_sim(); sim.step(); scene.update(scene.physics_dt)
+
+    # 목표값 만들기 (각 관절 frame 상대각)
+    q_des_rel = torch.zeros_like(q_home)
+
+    # --- 루프 ------------------------------------------------------------
+    log_t, log_q = [], []
+    t = 0.0
+    while t < sim_len:
+        
+        # 1) 상대 offset 계산
+        joint_pos = robot.data.joint_pos
+        q_des_rel[:, test_joint] = q_target[:, test_joint] - joint_pos[:, test_joint]
+        print(f"offset : {q_des_rel[:, test_joint]}")
+
+        # 2) commands 채우기
+        commands.zero_()
+        commands[:, pos_slice]   = q_des_rel
+        commands[:, stiff_slice] = Kp_val           # 모든 관절 동일 Kp
+        commands[:, damp_slice]  = zeta  # Crit.damping
+
+        # 3) set_command → compute 순서
         joint_imp_controller.set_command(commands)
+        tau = joint_imp_controller.compute(
+            dof_pos      = robot.data.joint_pos,
+            dof_vel      = robot.data.joint_vel,
+            mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices(),
+            gravity= robot.root_physx_view.get_gravity_compensation_forces()
+        )
 
-        torque = joint_imp_controller.compute(
-            dof_pos = robot.data.joint_pos, 
-            dof_vel = robot.data.joint_vel
-        ) 
-    
-        robot.set_joint_effort_target(torque, joint_ids=joint_ids)
-        scene.write_data_to_sim()
-        sim.step()
-        scene.update(sim_dt)
-        t += sim_dt
+        robot.set_joint_effort_target(tau, joint_ids=joint_ids)
 
-        ee_pose_w = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], :7]
-        ee_marker.visualize(ee_pose_w[:, :3], ee_pose_w[:, 3:7])
+        # 4) 물리 스텝
+        scene.write_data_to_sim(); sim.step(); scene.update(scene.physics_dt)
+        t += scene.physics_dt
+
+        # 5) 로그
+        log_t.append(t)
+        log_q.append(robot.data.joint_pos[0, test_joint].item())
+
+    # --- 결과 플롯 (선택) -------------------------------------------------
+    import matplotlib.pyplot as plt
+    plt.plot(log_t, log_q, label="actual")
+    plt.axhline(q_target[0, test_joint].cpu(), ls="--", label="target")
+    plt.xlabel("time [s]"); plt.ylabel("joint angle [rad]")
+    plt.title("Step response: joint {}".format(test_joint))
+    plt.legend(); plt.show()
+
+#    # ---- 상수 정의 ----
+#     amp_val = 0.2                            # 진폭 [rad]  (조인트마다 다르게 쓰고 싶으면 벡터로)
+#     T            = 1.0 / 0.1         # 한 사이클 길이
+#     zero_vel     = torch.zeros_like(q_home)
+#     init_rel     = torch.zeros_like(q_home)
+#     t            = 0.0
+#     last_cycle_i = -1                  # 직전에 실행한 조인트 인덱스
+#     n_j     = robot.num_joints
+
+#     # 루프 전에 한 번만 선언
+#     commands = torch.zeros(scene.num_envs, joint_imp_controller.num_actions,
+#                         device=scene.device)
+#     kp  = 30.0
+#     rho = 5.0
+#     pos_slice       = slice(0, n_j)
+#     stiffness_slice = slice(n_j, 2*n_j)
+#     damping_slice   = slice(2*n_j, 3*n_j)
+
+#     t = 0.0
+#     while simulation_app.is_running():
+
+#         # --- 0) 새 사이클을 시작해야 하나? ---------------------------
+#         cycle_i = int(t // T)          # 몇 번째 사이클인지 (0,1,2,…)
+#         if cycle_i != last_cycle_i:    # 막 새로 시작했다면
+#             print(f"[INFO] start cycle {cycle_i}  (joint {cycle_i % n_j})")
+
+#             # (a) 로봇 상태 초기화
+#             q_des = init_rel.clone()
+#             joint_pos = robot.data.default_joint_pos
+#             joint_vel = robot.data.default_joint_vel
+#             robot.write_joint_state_to_sim(joint_pos, joint_vel)
+#             scene.write_data_to_sim()
+#             sim.step()                 # ➊ reset 상태가 실제 시뮬에 반영되도록 한 틱 돌림
+#             scene.update(sim_dt)
+
+
+#             last_cycle_i = cycle_i           # 갱신
+#             # 이후 계산은 평소처럼 계속 진행
+
+#         # --- 1) 이번 사이클에서 움직일 조인트 -------------------------
+#         active_joint = cycle_i % n_j
+
+#         # --- 2) 원하는 각도(q_des) 계산 --------------------------------
+#         phase = torch.tensor(2 * torch.pi * (t % T) / T, device=scene.device)   # 0 ~ 2π
+#         q_des[:, active_joint] = amp_val * torch.sin(phase)
+#         print("------------------------------------------")
+#         print(f"desred val : {q_des[:, active_joint]}")
+
+#         # --- 3) 컨트롤러 명령 ------------------------------------------
+#         commands.zero_()
+#         commands[:, pos_slice]       = q_des
+#         commands[:, stiffness_slice] = kp
+#         commands[:, damping_slice]   = rho
+#         joint_imp_controller.set_command(commands)
+
+#         # --- 4) 토크 계산 & 적용 ---------------------------------------
+#         torque = joint_imp_controller.compute(
+#             dof_pos = robot.data.joint_pos,
+#             dof_vel = robot.data.joint_vel,
+#             mass_matrix = robot.root_physx_view.get_generalized_mass_matrices()
+#         )
+#         robot.set_joint_effort_target(torque, joint_ids=joint_ids)
+
+#         # --- 5) 시뮬레이터 스텝 ---------------------------------------
+#         scene.write_data_to_sim()
+#         sim.step()
+#         scene.update(sim_dt)
+#         t += sim_dt
+#         print(f"current_val : {robot.data.joint_pos[:, active_joint]}")
+#         print("---------------------------------------------")
+
 
 
 def main():

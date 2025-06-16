@@ -35,6 +35,12 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.commands = torch.zeros((self.num_envs, self.controller.num_actions), device=self.device)
         self.ik_commands = torch.zeros((self.num_envs, self.ik_controller.action_dim), device=self.device)
 
+        # Parameter for IK Controller
+        if self._robot.is_fixed_base:
+            self.jacobi_idx = self._robot_entity.body_ids[0] - 1
+        else:
+            self.jacobi_idx = self._robot_entity.body_ids[0]
+
         # Object Grasp Local Frame Pose
         object_local_grasp_pose = torch.zeros((1, 8, 7), device=self.device)
         self.object_local_grasp_pos = object_local_grasp_pose[:, :, :3].repeat(self.num_envs, 1, 1)
@@ -48,6 +54,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
 
         # Object Move Checker
         self.loc_error = torch.zeros(self.num_envs, device=self.device)
+        self.rot_error = torch.zeros(self.num_envs, device=self.device)
         self.is_object_move = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         self.noise_scale = torch.tensor(
@@ -67,58 +74,75 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         actions.shape  =  (N, 9)
-        0 :7     →  DOF position targets       (rad / m)
+        0 :6     →  DOF position targets       (rad / m)
         7 :14    →  Joint-stiffness  Kp        (N·m/rad)
         14:21    →  Damping-ratio     ζ        (-)
         """
         self.actions = actions.clone().clamp(-1.0, 1.0)
         # ── 1. 슬라이스 & 즉시 in-place clip ──────────────────────────
-        tgt  = self.cfg.joint_res_scale * self.actions[:, :7]
+        self.ik_commands[:, :3] = self.actions[:, :3] * self.cfg.loc_res_scale
+        self.ik_commands[:, 3:] = self.actions[:, 3:] * self.cfg.rot_res_scale
+        self.ik_controller.set_command(self.ik_commands, self.robot_grasp_pos_b[:, :3], self.robot_grasp_pos_b[:, 3:7])
 
-        kp_s = self.cfg.stiffness_scale * self.actions[:, 7:14]
-        kp_s = kp_s.clamp(self.robot_dof_stiffness_lower_limits,
-                          self.robot_dof_stiffness_upper_limits)
+        # kp_s = self.cfg.stiffness_scale * self.actions[:, 6:13]
+        # kp_s = kp_s.clamp(self.robot_dof_stiffness_lower_limits,
+        #                   self.robot_dof_stiffness_upper_limits)
 
-        z_s  = self.cfg.damping_scale * self.actions[:, 14:]
-        z_s  = z_s.clamp(self.robot_dof_damping_lower_limits,
-                         self.robot_dof_damping_upper_limits)
+        # z_s  = self.cfg.damping_scale * self.actions[:, 13:]
+        # z_s  = z_s.clamp(self.robot_dof_damping_lower_limits,
+        #                  self.robot_dof_damping_upper_limits)
 
         # ── 2. 1 값 → 7 값으로 브로드캐스트 ────────────
         # kp   = kp_s.view(-1, 1).expand(-1, self.num_active_joints)          # (N,7)
         # damp = z_s.view(-1, 1).expand(-1, self.num_active_joints)           # (N,7)
 
         # ── 3. 로봇 버퍼에 덮어쓰기 ───────────────────────────────────
-        self.robot_dof_residual.copy_(tgt)
-        self.robot_stiffness    .copy_(kp_s)
-        self.robot_damping_ratio.copy_(z_s)
-    
+        # self.robot_dof_residual.copy_(tgt)
+        # self.robot_stiffness    .copy_(kp_s)
+        # self.robot_damping_ratio.copy_(z_s)
+
+        # print(f"delta joint : {self.robot_dof_residual[0, :]}")
 
     def _apply_action(self) -> None:
         """
         최종 커맨드 [N x 21] 생성 후 Actuator API 호출.
         """
-        # ==== 커맨드 세팅 ====
-        # -- 1) Residual 값의 급격한 변화를 방지하기 위한 LPF --
-        filtered_residual = row_pass_filter(self.robot_dof_residual,
-                                            self.robot_prev_dof_residual,
-                                            self.physics_dt,
-                                            omega=torch.tensor(50.0, device=self.device))
+        # ====== 유효 조인트에 대한 자코비안 계산 ======
+        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
+
+        # Desired Joint 각도 계산 with respect to root frame
+        joint_pos_des = self.ik_controller.compute(self.robot_grasp_pos_b[:, :3], 
+                                                   self.robot_grasp_pos_b[:, 3:7], 
+                                                   jacobian, 
+                                                   self.robot_joint_pos[:, :self.num_active_joints])
         
-        cmd = torch.cat((filtered_residual,      # (N,7)
-                        self.robot_stiffness,        # (N,7) ← 공통 Kp 복제
-                        self.robot_damping_ratio),   # (N,7) ← 공통 zeta 복제
-                        dim=-1)                     # (N,21)
+        # Desried Joint 각도 발행 
+        self._robot.set_joint_position_target(joint_pos_des, joint_ids=self.joint_idx[:self.num_active_joints])
 
-        # -- 2) LPF 기반으로 계산된 Joint Residual을 command로 입력 --
-        self.controller.set_command(cmd)
-        torque = self.controller.compute(self.robot_joint_pos[:, 0:self.num_active_joints],
-                                         self.robot_joint_vel[:, 0:self.num_active_joints],
-                                         mass_matrix=None,
-                                         gravity=None)
-        self._robot.set_joint_effort_target(torque, joint_ids=self.joint_idx)
 
-        # -- 3) Recursive Filter의 특성을 반영, prev값 업데이트
-        self.robot_prev_dof_residual = filtered_residual
+        # # ==== 커맨드 세팅 ====
+        # # -- 1) Residual 값의 급격한 변화를 방지하기 위한 LPF --
+        # filtered_residual = row_pass_filter(self.robot_dof_residual,
+        #                                     self.robot_prev_dof_residual,
+        #                                     self.physics_dt,
+        #                                     omega=torch.tensor(50.0, device=self.device))
+        
+        # cmd = torch.cat((filtered_residual,      # (N,7)
+        #                 self.robot_stiffness,        # (N,7) 
+        #                 self.robot_damping_ratio),   # (N,7)
+        #                 dim=-1)                     # (N,21)
+
+        # # -- 2) LPF 기반으로 계산된 Joint Residual을 command로 입력 --
+        # self.controller.set_command(cmd)
+        # torque = self.controller.compute(self.robot_joint_pos[:, 0:self.num_active_joints],
+        #                                  self.robot_joint_vel[:, 0:self.num_active_joints],
+        #                                  mass_matrix=None,
+        #                                  gravity=None)
+
+        # self._robot.set_joint_effort_target(torque, joint_ids=self.joint_idx)
+
+        # # -- 3) Recursive Filter의 특성을 반영, prev값 업데이트
+        # self.robot_prev_dof_residual = filtered_residual
         
     
     def _get_dones(self):
@@ -129,14 +153,20 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         
     def _get_rewards(self):
         # Action Penalty
-        kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
-        kp_pen      = kp_norm ** 2                     # (env,)
+        # kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
+        # kp_pen      = kp_norm ** 2                     # (env,)
+        joint_vel_norm = torch.norm(self.robot_joint_vel[:, :self.num_active_joints], dim=1)
         # Object Contact Penalty
         penalty_move = self.is_object_move.float()
         # Approach Reward : Distance Nomarlization
-        r_pos = 0.2 / (self.loc_error + 0.2)
+        r_pos = 1 - torch.tanh(self.loc_error/0.2)
+        # Success Reward : Goal Reach
+        if self.loc_error < 1e-2 and self.rot_error < 1e-3:
+            r_success = torch.tensor(1.0, device=self.device) 
+        else:
+            r_success = torch.tensor(0.0, device=self.device)
         
-        reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * kp_pen - penalty_move
+        reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * joint_vel_norm - penalty_move + r_success
 
         # print(f"reward of env1 : {reward[0]}")
 
@@ -235,6 +265,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - object_loc_b[:, :3], dim=1
         )
+        self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], object_rot_b[:, 3:7])
         self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 1e-1,
                                                         torch.logical_or(torch.norm(self.object_angvel[env_ids], dim=1) > 1e-3, 
                                                                          torch.norm(self.object_linvel[env_ids], dim=1) > 1e-3))

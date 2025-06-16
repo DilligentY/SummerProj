@@ -187,7 +187,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
     # IK controller
     ik_controller = DifferentialIKControllerCfg = DifferentialIKControllerCfg(
         command_type='pose',
-        use_relative_mode=False,
+        use_relative_mode=True,
         ik_method='dls',)
     
     # Scene entities
@@ -195,7 +195,8 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
     # Action scale
-    joint_res_scale = 0.2
+    loc_res_scale = 0.2
+    rot_res_scale = 0.1
     stiffness_scale = controller.stiffness_limits[1]
     damping_scale = controller.damping_ratio_limits[1]
 
