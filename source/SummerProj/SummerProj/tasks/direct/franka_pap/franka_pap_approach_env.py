@@ -126,11 +126,6 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         #                                            self.robot_grasp_pos_b[:, 3:7], 
         #                                            jacobian, 
         #                                            self.robot_joint_pos[:, :self.num_active_joints])
-        
-
-        # # ==== 중력 보상을 위한 Impedance Low-Level Control ====
-
-
         # # Desried Joint 각 발행 
         # self._robot.set_joint_position_target(joint_pos_des, joint_ids=self.joint_idx[:self.num_active_joints])
 

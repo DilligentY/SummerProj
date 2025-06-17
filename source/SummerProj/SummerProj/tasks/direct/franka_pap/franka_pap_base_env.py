@@ -24,6 +24,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import subtract_frame_transforms
 from isaaclab.utils.math import quat_apply, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
+from isaaclab.envs import VecEnvStepReturn
 
 from .franka_pap_env_cfg import FrankaPapEnvCfg
 
@@ -74,12 +75,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
         lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
         rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
         self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
-
-        # Default goal positions
-        self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
-        self.goal_rot[:, 0] = 1.0
-        self.goal_loc = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
-        self.goal_loc[:, :] = torch.tensor([0.54, -0.64, 0.0], device=self.device)
         
         # Joint Impedance Controller
         self.controller = JointImpedanceController(cfg=self.cfg.controller,
@@ -91,9 +86,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.ik_controller = DifferentialIKController(cfg=self.cfg.ik_controller,
                                                       num_envs=self.num_envs,
                                                       device=self.device)
-        
-        # Goal marker
-        # self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
 
         # Tcp marker
         self.tcp_marker = VisualizationMarkers(self.cfg.tcp_cfg)
@@ -120,6 +112,27 @@ class FrankaPapBaseEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+    # def step(self, action: torch.Tensor) -> VecEnvStepReturn:
+    #     # From Superclass (DirectRLEnv)
+    #     action.to(self.device)
+
+    #     # add action noies
+    #     if self.cfg.action_noise_model:
+    #         action = self._action_noise_model.apply(action)
+        
+    #     # process actions
+    #     self._pre_physics_step(action)
+
+    #     # check if we need to do rendering within the physics loop
+    #     # note: checked here once to avoid multiple checks within the loop
+    #     is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors()
+
+    #     # perform physics stepping
+    #     for _ in range(self.cfg.decimation):
+    #         pass
+
+
+
     
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
@@ -133,9 +146,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
         joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
 
-        # Initialize Goal State with pose randomization
-        self._reset_target_pose(env_ids)
-
         # Intilialize Prev Joint Residual state for LPF
         self.robot_prev_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
 
@@ -145,15 +155,15 @@ class FrankaPapBaseEnv(DirectRLEnv):
 
 
     # ====================== Oxuilary Functions ================================
-    def _reset_target_pose(self, env_ids):
-        # reset goal rotation
-        rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
-        new_rot = randomize_rotation(
-            rand_floats[:, 0], rand_floats[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
-        # update goal pose and markers
-        self.goal_rot[env_ids] = new_rot
-        goal_loc = self.goal_loc + self.scene.env_origins
-        # self.goal_markers.visualize(goal_loc, self.goal_rot)
+    # def _reset_target_pose(self, env_ids):
+    #     # reset goal rotation
+    #     rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
+    #     new_rot = randomize_rotation(
+    #         rand_floats[:, 0], rand_floats[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+    #     # update goal pose and markers
+    #     self.goal_rot[env_ids] = new_rot
+    #     goal_loc = self.goal_loc + self.scene.env_origins
+    #     self.goal_markers.visualize(goal_loc, self.goal_rot)
 
 
     @abstractmethod
