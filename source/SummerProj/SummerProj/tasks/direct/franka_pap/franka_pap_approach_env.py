@@ -53,6 +53,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.target_grasp_pos_b = torch.zeros((self.num_envs, 3), device=self.device)
 
         # Object Move Checker & Success Checker
+        self.prev_loc_error = torch.zeros(self.num_envs, device=self.device)
         self.loc_error = torch.zeros(self.num_envs, device=self.device)
         self.rot_error = torch.zeros(self.num_envs, device=self.device)
         self.is_object_move = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -171,11 +172,18 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Action Penalty
         # kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
         # kp_pen      = kp_norm ** 2                     # (env,)
+        gamma = 0.99
         action_norm = torch.norm(self.actions, dim=1)
         # Object Contact Penalty
         penalty_move = self.is_object_move.float()
-        # Approach Reward : Distance Nomarlization
-        r_pos = 1 - torch.tanh(self.loc_error/0.2)
+        # Approach Reward(1): Distance Nomarlization
+        # r_pos = 1 - torch.tanh(self.loc_error/0.2)
+
+        # Approach Reward(2): Potential Based Reward Shaping
+        phi_s_prime = -torch.log(6 * self.loc_error + 1)
+        phi_s = -torch.log(6 * self.prev_loc_error + 1)
+        r_pos = gamma*phi_s_prime - phi_s 
+        # r_pos = 1 - torch.tanh(self.loc_error/0.2)
         # Success Reward : Goal Reach
         r_success = self.success.float()
         
@@ -275,6 +283,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         self.object_angvel[env_ids] = self._object.data.root_ang_vel_w[env_ids]
 
         # Whether Contact
+        self.prev_loc_error[env_ids] = self.loc_error[env_ids]
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - object_loc_b[:, :3], dim=1
         )
