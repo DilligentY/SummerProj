@@ -48,6 +48,7 @@ from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
+from isaaclab.controllers.joint_impedance import JointImpedanceController, JointImpedanceControllerCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, quat_apply
 
@@ -115,6 +116,13 @@ class RobotSceneCfg(InteractiveSceneCfg):
 
 def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     # Setup the scene
+    robot_entity_cfg = SceneEntityCfg("robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
+    robot_entity_cfg.resolve(scene)
+
+    robot = scene["robot"]
+    object = scene["object"]
+
+
     point_marker_cfg = CUBOID_MARKER_CFG.copy()
     point_marker_cfg.markers["cuboid"].size = (0.01, 0.01, 0.01)
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -128,11 +136,17 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls")
     diff_ik_controller = DifferentialIKController(diff_ik_cfg, num_envs=scene.num_envs, device=scene.device)
 
-    robot_entity_cfg = SceneEntityCfg("robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
-    robot_entity_cfg.resolve(scene)
-
-    robot = scene["robot"]
-    object = scene["object"]
+    num_active_joint = len(robot_entity_cfg.joint_ids)
+    joint_imp_cfg = JointImpedanceControllerCfg(command_type="p_rel", 
+                                                impedance_mode="variable",
+                                                stiffness=400.0,
+                                                damping_ratio=1.0,
+                                                inertial_compensation=True, 
+                                                gravity_compensation=True)
+    joint_imp_controller = JointImpedanceController(cfg=joint_imp_cfg, 
+                                                    num_robots=scene.num_envs,
+                                                    dof_pos_limits=robot.data.joint_pos_limits[:, :num_active_joint],
+                                                    device=scene.device)
 
     hand_link_idx = robot.find_bodies("panda_link7")[0][0]
     left_finger_link_idx = robot.find_bodies("panda_leftfinger")[0][0]
@@ -174,17 +188,21 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     )
     object_pose_b = torch.cat([object_loc_b, object_rot_b], dim=1)
     object_pose_b[:, 3:7] = torch.tensor([0.0, 0.0, 0.0, 0.0], device=scene.device)
-    goal_keypoints_loc_w = compute_keypoints(object_pose_w, num_keypoints=8)
-
-    ee_goals = torch.tensor([0.3, 0.3, 0.3, 0.707, 0, 0.707, 0], device=scene.device)
     
     # Motion Planning : RRT
     motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=object_pose_b.squeeze_(0), env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
     optimal_trajectory = motion_planner.plan()
     
+    # Commands for IK and Imp Control
     ik_commands = torch.zeros(scene.num_envs, diff_ik_controller.action_dim, device=scene.device)
     ik_commands[:, :3] = optimal_trajectory[0, :3]
     ik_commands[:, 3:] = optimal_trajectory[0, 3:7]
+
+    stiffness = 300
+    damping_ratio = 0.1
+    imp_commands = torch.zeros([scene.num_envs, joint_imp_controller.num_actions], device=scene.device)
+    imp_commands[:, 7:14] = stiffness
+    imp_commands[:, 14:] = damping_ratio
 
     diff_ik_controller.reset()
     diff_ik_controller.set_command(ik_commands, tcp_start_pose_b[:3], tcp_start_pose_b[3:7])
@@ -232,12 +250,26 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
         # Get the root & joint Pose in world frame
         joint_pos = robot.data.joint_pos[:, robot_entity_cfg.joint_ids]
+        joint_vel = robot.data.joint_vel[:, robot_entity_cfg.joint_ids]
 
         # Compute the desired joint position using the IK and the end-effector pose from the base frame
         joint_pos_des = diff_ik_controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
-    
-        robot.set_joint_position_target(joint_pos_des, joint_ids=robot_entity_cfg.joint_ids)
-        robot.set_joint_position_target(finger_open_joint_pos, joint_ids=finger_ids)
+
+        # Set command for Impedance control
+        imp_commands[:, :7] = joint_pos_des - joint_pos
+        joint_imp_controller.set_command(command=imp_commands)
+
+        # calculate target torques
+        tau = joint_imp_controller.compute(
+            dof_pos      = joint_pos,
+            dof_vel      = joint_vel,
+            mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :num_active_joint, :num_active_joint],
+            gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, robot_entity_cfg.joint_ids]
+        )
+
+        robot.set_joint_effort_target(tau, joint_ids=robot_entity_cfg.joint_ids)
+        # robot.set_joint_position_target(joint_pos_des, joint_ids=robot_entity_cfg.joint_ids)
+        # robot.set_joint_position_target(finger_open_joint_pos, joint_ids=finger_ids)
         scene.write_data_to_sim()
         sim.step()
         scene.update(sim_dt)

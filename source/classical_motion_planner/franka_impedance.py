@@ -117,10 +117,10 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     
     # ---------- 환경 준비 ----------
     n_j          = robot.num_joints           # Franka: 9 (팔7+그리퍼2) 또는 7
-    test_joint   = 1                          # 움직일 관절 번호
-    step_size    = 1.0                       # [rad] 상대 목표
+    test_joint   = 3                          # 움직일 관절 번호
+    step_size    = 0.0                       # [rad] 상대 목표
     sim_len      = 4.0                        # [s] 실험 길이
-    Kp_val       = 50.0                       # Stiffness
+    Kp_val       = 500.0                       # Stiffness
     zeta         = 0.5                        # Damping ratio(=가상 댐퍼 비율)
     joint_limits = robot.data.joint_limits
 
@@ -155,7 +155,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         
         # 1) 상대 offset 계산
         joint_pos = robot.data.joint_pos
-        q_des_rel[:, test_joint] =  q_target[:, test_joint] - joint_pos[:, test_joint]
+        q_des_rel =  q_target - joint_pos
         print(f"current joint : {joint_pos[:, test_joint]}")
         print(f"offset : {q_des_rel[:, test_joint]}")
 
@@ -173,6 +173,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
             mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices(),
             gravity= robot.root_physx_view.get_gravity_compensation_forces()
         )
+        tau += robot.root_physx_view.get_coriolis_and_centrifugal_compensation_forces()
 
         robot.set_joint_effort_target(tau, joint_ids=joint_ids)
         # 4) 물리 스텝

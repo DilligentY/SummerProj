@@ -32,7 +32,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Controller Commands & Scene Entity
         self._robot_entity = self.cfg.robot_entity
         self._robot_entity.resolve(self.scene)
-        self.commands = torch.zeros((self.num_envs, self.controller.num_actions), device=self.device)
+        self.commands = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.ik_commands = torch.zeros((self.num_envs, self.ik_controller.action_dim), device=self.device)
 
         # Parameter for IK Controller
@@ -76,15 +76,20 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         actions.shape  =  (N, 9)
-        0:6      →  End Effector 6D Pose for IK             (m)
+        0:7      →  Joint relative position                 (rad)
         6:13     →  Joint-stiffness for Impedance Control   (N·m/rad)
         13:20    →  Damping-ratio for Impedance Control     (-)
         """
         self.actions = actions.clone().clamp(-1.0, 1.0)
         # ── 1. 슬라이스 & 즉시 in-place clip ──────────────────────────
-        self.ik_commands[:, :3] = self.actions[:, :3] * self.cfg.loc_res_scale
-        self.ik_commands[:, 3:] = self.actions[:, 3:] * self.cfg.rot_res_scale
-        self.ik_controller.set_command(self.ik_commands, self.robot_grasp_pos_b[:, :3], self.robot_grasp_pos_b[:, 3:7])
+        self.commands[:, :] = self.actions * self.cfg.joint_res_scale
+
+        self.processed_commands = torch.clamp(self.commands + self.robot_joint_pos[:, :self.num_active_joints],
+                                              self.robot_dof_lower_limits[:self.num_active_joints],
+                                              self.robot_dof_upper_limits[:self.num_active_joints])
+        # self.ik_commands[:, :3] = self.actions[:, :3] * self.cfg.loc_res_scale
+        # self.ik_commands[:, 3:] = self.actions[:, 3:] * self.cfg.rot_res_scale
+        # self.ik_controller.set_command(self.ik_commands, self.robot_grasp_pos_b[:, :3], self.robot_grasp_pos_b[:, 3:7])
 
         # kp_s = self.cfg.stiffness_scale * self.actions[:, 6:13]
         # kp_s = kp_s.clamp(self.robot_dof_stiffness_lower_limits,
@@ -109,24 +114,27 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         """
         최종 커맨드 [N x 21] 생성 후 Actuator API 호출.
         """
-        # ====== 유효 조인트에 대한 자코비안 계산 ======
-        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
+        # 방법 1 : Target Joint Input
+        self._robot.set_joint_position_target(self.processed_commands, joint_ids=self.joint_idx)
 
-        # Desired Joint 각도 계산 with respect to root frame
-        joint_pos_des = self.ik_controller.compute(self.robot_grasp_pos_b[:, :3], 
-                                                   self.robot_grasp_pos_b[:, 3:7], 
-                                                   jacobian, 
-                                                   self.robot_joint_pos[:, :self.num_active_joints])
+        # # 방법 2 : IK ====== 유효 조인트에 대한 자코비안 계산 ======
+        # jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
+
+        # # Desired Joint 각도 계산 with respect to root frame
+        # joint_pos_des = self.ik_controller.compute(self.robot_grasp_pos_b[:, :3], 
+        #                                            self.robot_grasp_pos_b[:, 3:7], 
+        #                                            jacobian, 
+        #                                            self.robot_joint_pos[:, :self.num_active_joints])
         
 
-        # ==== 중력 보상을 위한 Impedance Low-Level Control ====
+        # # ==== 중력 보상을 위한 Impedance Low-Level Control ====
 
 
-        # Desried Joint 각 발행 
-        self._robot.set_joint_position_target(joint_pos_des, joint_ids=self.joint_idx[:self.num_active_joints])
+        # # Desried Joint 각 발행 
+        # self._robot.set_joint_position_target(joint_pos_des, joint_ids=self.joint_idx[:self.num_active_joints])
 
 
-        # # ==== 커맨드 세팅 ====
+        # # 방법3) Joint Impedance ==== 커맨드 세팅 ====
         # # -- 1) Residual 값의 급격한 변화를 방지하기 위한 LPF --
         # filtered_residual = row_pass_filter(self.robot_dof_residual,
         #                                     self.robot_prev_dof_residual,

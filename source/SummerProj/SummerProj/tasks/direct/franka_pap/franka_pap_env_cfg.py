@@ -197,6 +197,7 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
     # Action scale
     loc_res_scale = 0.1
     rot_res_scale = 0.1
+    joint_res_scale = 0.2
     stiffness_scale = controller.stiffness_limits[1]
     damping_scale = controller.damping_ratio_limits[1]
 
