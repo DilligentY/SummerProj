@@ -155,7 +155,6 @@ class FrankaPapEnvCfg(DirectRLEnvCfg):
         }
     )
 
-    
     # Table
     table = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Table",

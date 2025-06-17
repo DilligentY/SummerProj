@@ -125,11 +125,6 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         #                                            self.robot_grasp_pos_b[:, 3:7], 
         #                                            jacobian, 
         #                                            self.robot_joint_pos[:, :self.num_active_joints])
-        
-
-        # # ==== 중력 보상을 위한 Impedance Low-Level Control ====
-
-
         # # Desried Joint 각 발행 
         # self._robot.set_joint_position_target(joint_pos_des, joint_ids=self.joint_idx[:self.num_active_joints])
 
@@ -175,7 +170,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Object Contact Penalty
         penalty_move = self.is_object_move.float()
         # Approach Reward : Distance Nomarlization
-        r_pos = 1 - torch.tanh(self.loc_error/0.2)
+        r_pos = 1 - torch.tanh(self.loc_error/0.4)
         # Success Reward : Goal Reach
         r_success = self.success.float()
         
