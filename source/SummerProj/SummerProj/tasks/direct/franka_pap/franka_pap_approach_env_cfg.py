@@ -79,4 +79,4 @@ class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
     # reward hyperparameter
     alpha, beta = 10.0, 4.0
     w_pos = 3.0
-    w_penalty = 0.01
+    w_penalty = 0.5

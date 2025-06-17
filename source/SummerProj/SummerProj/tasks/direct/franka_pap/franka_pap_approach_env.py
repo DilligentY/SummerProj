@@ -162,7 +162,8 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
     def _get_dones(self):
         self._compute_intermediate_values()
         truncated = self.episode_length_buf >= self.max_episode_length - 1
-        self.success = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-3)
+        self.success = self.rot_error < 1e-3
+        # self.success = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-3)
         terminated = torch.logical_or(self.is_object_move, self.success)
         return terminated, truncated
         
@@ -170,7 +171,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Action Penalty
         # kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
         # kp_pen      = kp_norm ** 2                     # (env,)
-        joint_vel_norm = torch.norm(self.robot_joint_vel[:, :self.num_active_joints], dim=1)
+        action_norm = torch.norm(self.actions, dim=1)
         # Object Contact Penalty
         penalty_move = self.is_object_move.float()
         # Approach Reward : Distance Nomarlization
@@ -178,7 +179,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         # Success Reward : Goal Reach
         r_success = self.success.float()
         
-        reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * joint_vel_norm - penalty_move + r_success
+        reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * action_norm - penalty_move + r_success
 
         # print(f"reward of env1 : {reward[0]}")
 
@@ -279,7 +280,7 @@ class FrankaPapApproachEnv(FrankaPapBaseEnv):
         )
 
         self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], object_rot_b[:, :])
-        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 0.1,
+        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 1e-2,
                                                         torch.logical_or(torch.norm(self.object_angvel[env_ids], dim=1) > 1e-3, 
                                                                          torch.norm(self.object_linvel[env_ids], dim=1) > 1e-3))
 
