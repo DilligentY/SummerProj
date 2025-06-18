@@ -48,7 +48,6 @@ class FrankaBaseEnv(DirectRLEnv):
         self.robot_dof_damping_upper_limits = torch.tensor(self.cfg.imp_controller.damping_ratio_limits[1], device=self.device)
 
         # Action Space
-        self.robot_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_stiffness = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_damping_ratio = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
 
@@ -66,13 +65,13 @@ class FrankaBaseEnv(DirectRLEnv):
         rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
         self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
         
-        # Joint Impedance Controller
+        # Joint Impedance Controller for Torque Control
         self.imp_controller = JointImpedanceController(cfg=self.cfg.imp_controller,
                                                        num_robots=self.num_envs,
                                                        dof_pos_limits=self._robot.data.soft_joint_pos_limits[:, 0:self.num_active_joints, :],
                                                        device=self.device)
         
-        # IK Controller
+        # IK Controller for Position Control
         self.ik_controller = DifferentialIKController(cfg=self.cfg.ik_controller,
                                                       num_envs=self.num_envs,
                                                       device=self.device)

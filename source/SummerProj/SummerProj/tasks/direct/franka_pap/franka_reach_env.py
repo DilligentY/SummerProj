@@ -57,7 +57,7 @@ class FrankaReachEnv(FrankaBaseEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
-        actions.shape  =  (N, 9)
+        actions.shape  =  (N, 20)
         0:6      →  Delta EE 6D Pose for IK                       (m, -)
         6:13     →  Joint-stiffness for Impedance Control   (N·m/rad)
         13:20    →  Damping-ratio for Impedance Control     (-)
@@ -79,13 +79,13 @@ class FrankaReachEnv(FrankaBaseEnv):
                                        self.robot_grasp_pos_b[:, 3:7])
         
         # ===== Impedance Controller Gain 세팅 =====
-        self.imp_commands[:, self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
+        self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
         self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 13:]
         
 
     def _apply_action(self) -> None:
         """
-        최종 커맨드 [N x 21] 생성 후 Actuator API 호출.
+            최종 커맨드 [N x 20] 생성 후 Controller API 호출.
         """
         # ========= Data Setting ==========
         robot_root_pos = self._robot.data.root_state_w[:, :7]
@@ -118,10 +118,11 @@ class FrankaReachEnv(FrankaBaseEnv):
                                                  dof_vel=robot_joint_vel,
                                                  mass_matrix=gen_mass,
                                                  gravity=gen_grav)
+        
+        print(f"Computed Torque : {des_torque}")
 
         self._robot.set_joint_effort_target(des_torque, joint_ids=self.joint_idx)
         
-    
     def _get_dones(self):
         self._compute_intermediate_values()
         self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-3)

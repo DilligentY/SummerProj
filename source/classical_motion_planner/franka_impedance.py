@@ -121,8 +121,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     test_joint   = 3                          # 움직일 관절 번호
     step_size    = 0.0                       # [rad] 상대 목표
     sim_len      = 3.0                        # [s] 실험 길이
-    Kp_val       = 100.0                       # Stiffness
-    kp_table = torch.tensor([100, 800, 300, 200, 80, 100, 100], device=scene.device)
+    kp_table = torch.tensor([100, 200, 300, 100, 80, 80, 100], device=scene.device)
     zeta         = 0.1                        # Damping ratio(=가상 댐퍼 비율)
     joint_limits = robot.data.joint_limits
 
@@ -138,6 +137,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
 
     # --- 목표값 설정 -----------------------------------------------------
+    zero_joint_efforts = torch.zeros(scene.num_envs, n_j, device=sim.device)
     q_init   = robot.data.default_joint_pos.clone()
     q_dot_init = robot.data.default_joint_vel.clone()
     q_target = q_init[:, :n_j].clone()
@@ -145,6 +145,8 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
     # --- 초기 한 틱 돌려 관성 행렬 준비 -----------------------------------
     robot.write_joint_state_to_sim(q_init, q_dot_init)
+    robot.set_joint_effort_target(zero_joint_efforts, joint_ids=joint_ids)
+    robot.write_data_to_sim()
     robot.reset()
 
     # 목표값 만들기 (각 관절 frame Relative Position)
@@ -179,11 +181,15 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
             mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :n_j, :n_j],
             gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, :n_j]
         )
-        tau += robot.root_physx_view.get_coriolis_and_centrifugal_compensation_forces()[:, :n_j]
+        # tau += robot.root_physx_view.get_coriolis_and_centrifugal_compensation_forces()[:, :n_j]
 
-        robot.set_joint_effort_target(tau, joint_ids=joint_ids)
+        # robot.set_joint_effort_target(tau, joint_ids=joint_ids)
+
         # 4) 물리 스텝
-        scene.write_data_to_sim(); sim.step(); scene.update(scene.physics_dt)
+        robot.write_data_to_sim()
+        scene.write_data_to_sim() 
+        sim.step() 
+        scene.update(scene.physics_dt)
         t += scene.physics_dt
 
         # 5) 로그 저장
@@ -229,7 +235,7 @@ def main():
     sim = SimulationContext(sim_cfg)
     sim_dt = sim.get_physics_dt()
     # Set main camera
-    sim.set_camera_view([2.5, 2.5, 2.5], [0.0, 0.0, 0.0])
+    sim.set_camera_view([2.5, 2.5, 4.5], [0.0, 0.0, 0.0])
     # Design scene
     scene_cfg = RobotSceneCfg(num_envs=args_cli.num_envs, env_spacing=2.0)
     scene = InteractiveScene(scene_cfg)
@@ -243,3 +249,6 @@ def main():
 if __name__ == "__main__":
     main()
     simulation_app.close()
+
+
+
