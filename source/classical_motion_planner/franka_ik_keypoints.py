@@ -199,7 +199,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     ik_commands[:, 3:] = optimal_trajectory[0, 3:7]
 
     stiffness = 300
-    damping_ratio = 0.1
+    damping_ratio = 0.3
     imp_commands = torch.zeros([scene.num_envs, joint_imp_controller.num_actions], device=scene.device)
     imp_commands[:, 7:14] = stiffness
     imp_commands[:, 14:] = damping_ratio

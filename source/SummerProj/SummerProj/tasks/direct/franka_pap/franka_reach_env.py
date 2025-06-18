@@ -5,34 +5,25 @@
 
 from __future__ import annotations
 
-import gymnasium as gym
 import numpy as np
 import torch
-
-from isaacsim.core.utils.stage import get_current_stage
-from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
-from pxr import UsdGeom
-
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.envs import DirectRLEnv
-from isaaclab.markers import VisualizationMarkers
-from isaaclab.controllers import DifferentialIKController
 from isaaclab.utils.math import quat_error_magnitude, subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, quat_apply
+from isaaclab.markers import VisualizationMarkers
 
 from .franka_base_env import FrankaBaseEnv
-from .franka_pap_approach_env_cfg import FrankaPapApproachEnvCfg
+from .franka_reach_env_cfg import FrankaReachEnvCfg
 
-class FrankaPapApproachEnv(FrankaBaseEnv):
+class FrankaReachEnv(FrankaBaseEnv):
     """Franka Pap Approach Environment for the Franka Emika Panda robot."""
-    cfg: FrankaPapApproachEnvCfg
+    cfg: FrankaReachEnvCfg
     def __init__(self, cfg: FrankaBaseEnv, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         # Controller Commands & Scene Entity
         self._robot_entity = self.cfg.robot_entity
         self._robot_entity.resolve(self.scene)
-        self.commands = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
+        self.processed_actions = torch.zeros((self.num_envs, self.cfg.action_space), device=self.device)
+        self.imp_commands = torch.zeros((self.num_envs, self.imp_controller.num_actions), device=self.device)
         self.ik_commands = torch.zeros((self.num_envs, self.ik_controller.action_dim), device=self.device)
 
         # Parameter for IK Controller
@@ -41,132 +32,101 @@ class FrankaPapApproachEnv(FrankaBaseEnv):
         else:
             self.jacobi_idx = self._robot_entity.body_ids[0]
 
-        # Object Grasp Local Frame Pose
-        self.object_link_idx = self._object.find_bodies("Object")[0][0]
-        object_local_grasp_pose = torch.zeros((1, 8, 7), device=self.device)
-        self.object_local_grasp_pos = object_local_grasp_pose[:, :, :3].repeat(self.num_envs, 1, 1)
-        self.object_local_grasp_rot = object_local_grasp_pose[:, :, 3:7].repeat(self.num_envs, 1, 1)
+        # Goal pose
+        self.goal_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
+        self.goal_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
 
         # Robot and Object Grasp Poses
         self.robot_grasp_pos_w = torch.zeros((self.num_envs, 7), device=self.device)
         self.robot_grasp_pos_b = torch.zeros((self.num_envs, 7), device=self.device)
-        self.target_grasp_pos_w = torch.zeros((self.num_envs, 4), device=self.device)
-        self.target_grasp_pos_b = torch.zeros((self.num_envs, 3), device=self.device)
 
         # Object Move Checker & Success Checker
         self.prev_loc_error = torch.zeros(self.num_envs, device=self.device)
         self.loc_error = torch.zeros(self.num_envs, device=self.device)
         self.rot_error = torch.zeros(self.num_envs, device=self.device)
-        self.is_object_move = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.is_reach = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # Domain Randomization Scale
         self.noise_scale = torch.tensor(
                             [self.cfg.reset_position_noise_x, self.cfg.reset_position_noise_y],
                             device=self.device,)
-
-        # # Keypoints
-        # self.gt_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
-
-        # # Keypoint markers
-        # self.keypoints_marker = VisualizationMarkers(self.cfg.keypoints_cfg)
         
-        # # Taret Keypoint marker
-        # self.target_marker = VisualizationMarkers(self.cfg.target_points_cfg)
-
-    def _setup_scene(self):
-        self._object = RigidObject(self.cfg.object)
-        self.scene.rigid_objects["object"] = self._object
-        super()._setup_scene()
+        # goal point marker
+        self.target_marker = VisualizationMarkers(self.cfg.goal_pos_marker_cfg)
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         actions.shape  =  (N, 9)
-        0:7      →  Joint relative position                 (rad)
+        0:6      →  Delta EE 6D Pose for IK                       (m, -)
         6:13     →  Joint-stiffness for Impedance Control   (N·m/rad)
         13:20    →  Damping-ratio for Impedance Control     (-)
         """
         self.actions = actions.clone().clamp(-1.0, 1.0)
-        # ── 1. 슬라이스 & 즉시 in-place clip ──────────────────────────
-        self.commands[:, :] = self.actions * self.cfg.joint_res_scale
-
-        self.processed_commands = torch.clamp(self.commands + self.robot_joint_pos[:, :self.num_active_joints],
-                                              self.robot_dof_lower_limits[:self.num_active_joints],
-                                              self.robot_dof_upper_limits[:self.num_active_joints])
-        # self.ik_commands[:, :3] = self.actions[:, :3] * self.cfg.loc_res_scale
-        # self.ik_commands[:, 3:] = self.actions[:, 3:] * self.cfg.rot_res_scale
-        # self.ik_controller.set_command(self.ik_commands, self.robot_grasp_pos_b[:, :3], self.robot_grasp_pos_b[:, 3:7])
-
-        # kp_s = self.cfg.stiffness_scale * self.actions[:, 6:13]
-        # kp_s = kp_s.clamp(self.robot_dof_stiffness_lower_limits,
-        #                   self.robot_dof_stiffness_upper_limits)
-
-        # z_s  = self.cfg.damping_scale * self.actions[:, 13:]
-        # z_s  = z_s.clamp(self.robot_dof_damping_lower_limits,
-        #                  self.robot_dof_damping_upper_limits)
-
-        # ── 2. 1 값 → 7 값으로 브로드캐스트 ────────────
-        # kp   = kp_s.view(-1, 1).expand(-1, self.num_active_joints)          # (N,7)
-        # damp = z_s.view(-1, 1).expand(-1, self.num_active_joints)           # (N,7)
-
-        # ── 3. 로봇 버퍼에 덮어쓰기 ───────────────────────────────────
-        # self.robot_dof_residual.copy_(tgt)
-        # self.robot_stiffness    .copy_(kp_s)
-        # self.robot_damping_ratio.copy_(z_s)
-
-        # print(f"delta joint : {self.robot_dof_residual[0, :]}")
+        # ── 슬라이스 & 즉시 in-place clip ──────────────────────────
+        self.processed_actions[:, :3] = self.actions[:, :3] * self.cfg.loc_res_scale
+        self.processed_actions[:, 3:6] = self.actions[:, 3:6] * self.cfg.rot_res_scale
+        self.processed_actions[:, 6:13] = torch.clamp(self.actions[:, 6:13] * self.cfg.stiffness_scale,
+                                                      self.robot_dof_stiffness_lower_limits,
+                                                      self.robot_dof_stiffness_upper_limits)
+        self.processed_actions[:, 13:] = torch.clamp(self.actions[:, 13:] * self.cfg.damping_scale,
+                                                     self.robot_dof_damping_lower_limits,
+                                                     self.robot_dof_damping_upper_limits) 
+        
+        # ===== IK Command 세팅 =====
+        self.ik_controller.set_command(self.processed_actions[:, :6],
+                                       self.robot_grasp_pos_b[:, :3],
+                                       self.robot_grasp_pos_b[:, 3:7])
+        
+        # ===== Impedance Controller Gain 세팅 =====
+        self.imp_commands[:, self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
+        self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 13:]
+        
 
     def _apply_action(self) -> None:
         """
         최종 커맨드 [N x 21] 생성 후 Actuator API 호출.
         """
-        # 방법 1 : Target Joint Input
-        self._robot.set_joint_position_target(self.processed_commands, joint_ids=self.joint_idx)
+        # ========= Data Setting ==========
+        robot_root_pos = self._robot.data.root_state_w[:, :7]
+        robot_joint_pos = self._robot.data.joint_pos[:, :self.num_active_joints]
+        robot_joint_vel = self._robot.data.joint_vel[:, :self.num_active_joints]
+        lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
+        rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
+        robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
+        robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
+            robot_root_pos[:, :3], robot_root_pos[:, 3:7], robot_grasp_pos_w[:, :3], robot_grasp_pos_w[:, 3:7])
 
-        # # 방법 2 : IK ====== 유효 조인트에 대한 자코비안 계산 ======
-        # jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
+        gen_mass = self._robot.root_physx_view.get_generalized_mass_matrices()[:, :self.num_active_joints, :self.num_active_joints]
+        gen_grav = self._robot.root_physx_view.get_gravity_compensation_forces()[:, :self.num_active_joints]
 
-        # # Desired Joint 각도 계산 with respect to root frame
-        # joint_pos_des = self.ik_controller.compute(self.robot_grasp_pos_b[:, :3], 
-        #                                            self.robot_grasp_pos_b[:, 3:7], 
-        #                                            jacobian, 
-        #                                            self.robot_joint_pos[:, :self.num_active_joints])
-        # # Desried Joint 각 발행 
-        # self._robot.set_joint_position_target(joint_pos_des, joint_ids=self.joint_idx[:self.num_active_joints])
+        # ========= Inverse Kinematics =========
+        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
 
-
-        # # 방법3) Joint Impedance ==== 커맨드 세팅 ====
-        # # -- 1) Residual 값의 급격한 변화를 방지하기 위한 LPF --
-        # filtered_residual = row_pass_filter(self.robot_dof_residual,
-        #                                     self.robot_prev_dof_residual,
-        #                                     self.physics_dt,
-        #                                     omega=torch.tensor(50.0, device=self.device))
+        # ======== Target Joint Angle 계산 ========
+        joint_pos_des = self.ik_controller.compute(robot_grasp_loc_b, 
+                                                   robot_grasp_rot_b, 
+                                                   jacobian, 
+                                                   robot_joint_pos)
         
-        # cmd = torch.cat((filtered_residual,      # (N,7)
-        #                 self.robot_stiffness,        # (N,7) 
-        #                 self.robot_damping_ratio),   # (N,7)
-        #                 dim=-1)                     # (N,21)
+        # ======== Target Joint Angle을 바탕으로 Impedance Control ======
+        res_joint_pos = joint_pos_des - robot_joint_pos
+        self.imp_commands[:, :self.num_active_joints] = res_joint_pos
+        self.imp_controller.set_command(self.imp_commands)
 
-        # # -- 2) LPF 기반으로 계산된 Joint Residual을 command로 입력 --
-        # self.controller.set_command(cmd)
-        # torque = self.controller.compute(self.robot_joint_pos[:, 0:self.num_active_joints],
-        #                                  self.robot_joint_vel[:, 0:self.num_active_joints],
-        #                                  mass_matrix=None,
-        #                                  gravity=None)
+        des_torque = self.imp_controller.compute(dof_pos=robot_joint_pos,
+                                                 dof_vel=robot_joint_vel,
+                                                 mass_matrix=gen_mass,
+                                                 gravity=gen_grav)
 
-        # self._robot.set_joint_effort_target(torque, joint_ids=self.joint_idx)
-
-        # # -- 3) Recursive Filter의 특성을 반영, prev값 업데이트
-        # self.robot_prev_dof_residual = filtered_residual
+        self._robot.set_joint_effort_target(des_torque, joint_ids=self.joint_idx)
         
     
     def _get_dones(self):
         self._compute_intermediate_values()
+        self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-3)
         truncated = self.episode_length_buf >= self.max_episode_length - 1
-        self.success = self.rot_error < 1e-3
-        # self.success = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-3)
-        terminated = torch.logical_or(self.is_object_move, self.success)
+        terminated = self.is_reach
         return terminated, truncated
         
     def _get_rewards(self):
@@ -174,9 +134,7 @@ class FrankaPapApproachEnv(FrankaBaseEnv):
         # kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
         # kp_pen      = kp_norm ** 2                     # (env,)
         gamma = 0.99
-        action_norm = torch.norm(self.actions, dim=1)
-        # Object Contact Penalty
-        penalty_move = self.is_object_move.float()
+        action_norm = torch.norm(self.actions[:, 6:13], dim=1)
         # Approach Reward(1): Distance Nomarlization
         # r_pos = 1 - torch.tanh(self.loc_error/0.2)
 
@@ -186,9 +144,9 @@ class FrankaPapApproachEnv(FrankaBaseEnv):
         r_pos = gamma*phi_s_prime - phi_s 
         # r_pos = 1 - torch.tanh(self.loc_error/0.2)
         # Success Reward : Goal Reach
-        r_success = self.success.float()
+        r_success = self.is_reach.float()
         
-        reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * action_norm - penalty_move + r_success
+        reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * action_norm + r_success
 
         # print(f"reward of env1 : {reward[0]}")
 
@@ -204,7 +162,7 @@ class FrankaPapApproachEnv(FrankaBaseEnv):
         )
 
         object_loc_tcp, object_rot_tcp = subtract_frame_transforms(
-            self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7], self.object_pos_w[:, :3], self.object_pos_w[:, 3:7]
+            self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7], self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7]
         )
 
         object_pos_tcp = torch.cat([object_loc_tcp, object_rot_tcp], dim=1)
@@ -232,24 +190,29 @@ class FrankaPapApproachEnv(FrankaBaseEnv):
         super()._reset_idx(env_ids)
         self.ik_controller.reset(env_ids)
 
-        # object state reset : X and Y Location
-        # X Range : 0.2 + [-0.1, 0.1] = [0.1, 0.3]
-        # y Range : 0.0 + [-0.2, 0.2] = [-0.2, 0.2]
-        object_default_state = self._object.data.default_root_state.clone()[env_ids]
-
-        loc_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
-        object_default_state[:, :2] += self.noise_scale * loc_noise + self.scene.env_origins[env_ids, :2]
+        # object state reset : Location
+        loc_noise_x = sample_uniform(0.4, 0.7, (len(env_ids), 1), device=self.device)
+        loc_noise_y = sample_uniform(-0.2, 0.2, (len(env_ids), 1), device=self.device)
+        loc_noise_z = sample_uniform(0.1, 0.5, (len(env_ids), 1), device=self.device)
+        loc_noise = torch.cat([loc_noise_x, loc_noise_y, loc_noise_z], dim=-1)
+        object_default_state = torch.zeros_like(self._robot.data.default_root_state[env_ids], device=self.device)
+        object_default_state[:, :3] += loc_noise + self.scene.env_origins[env_ids, :3]
     
-        # object state reset : X and Y Rotation
-        rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
+        # object state reset : Rotation
+        rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
         object_default_state[:, 3:7] = randomize_rotation(
             rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
         )
 
-        object_default_state[:, 7:] = torch.zeros_like(self._object.data.default_root_state[env_ids, 7:])
-        self._object.write_root_pose_to_sim(object_default_state[:, :7], env_ids)
-        self._object.write_root_velocity_to_sim(object_default_state[:, 7:], env_ids)
+        # Convert to Root Frame
+        root_pos_w = self._robot.data.default_root_state[env_ids, :7]
+        goal_loc_b, goal_rot_b = subtract_frame_transforms(
+            root_pos_w[:, :3], root_pos_w[:, 3:7], object_default_state[:, :3], object_default_state[:, 3:7])
 
+        # Goalpoint Pose
+        self.goal_pos_w[env_ids] = object_default_state[:, :7]
+        self.goal_pos_b[env_ids] = torch.cat([goal_loc_b, goal_rot_b], dim=-1)
+        
         # Need to refresh the intermediate values so that _get_observations() can use the latest values
         self._compute_intermediate_values(env_ids)
 
@@ -272,30 +235,14 @@ class FrankaPapApproachEnv(FrankaBaseEnv):
             root_pos_w[:, :3], root_pos_w[:, 3:7], self.robot_grasp_pos_w[env_ids, :3], self.robot_grasp_pos_w[env_ids, 3:7])
         self.robot_grasp_pos_b[env_ids] = torch.cat((robot_grasp_loc_b, robot_grasp_rot_b), dim=1)
 
-        # data for object with respect to the world & root frame
-        object_loc_w = self._object.data.root_pos_w[env_ids]
-        object_rot_w = self._object.data.root_quat_w[env_ids]
-        object_loc_b, object_rot_b = subtract_frame_transforms(
-            root_pos_w[:, :3], root_pos_w[:, 3:7], object_loc_w, object_rot_w
-        )
-        self.object_pos_w[env_ids] = torch.cat([object_loc_w, object_rot_w], dim=-1)
-        self.object_pos_b[env_ids] = torch.cat([object_loc_b, object_rot_b], dim=-1)
-        self.object_linvel[env_ids] = self._object.data.root_lin_vel_w[env_ids]
-        self.object_angvel[env_ids] = self._object.data.root_ang_vel_w[env_ids]
-
-        # Whether Contact
+        # Distance
         self.prev_loc_error[env_ids] = self.loc_error[env_ids]
         self.loc_error[env_ids] = torch.norm(
-            self.robot_grasp_pos_b[env_ids, :3] - object_loc_b[:, :3], dim=1
-        )
-
-        self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], object_rot_b[:, :])
-        self.is_object_move[env_ids] = torch.logical_and(self.loc_error[env_ids] < 1e-2,
-                                                        torch.logical_or(torch.norm(self.object_angvel[env_ids], dim=1) > 1e-3, 
-                                                                         torch.norm(self.object_linvel[env_ids], dim=1) > 1e-3))
-
-        # Visualization Keypoints
+            self.robot_grasp_pos_b[env_ids, :3] - self.goal_pos_b[env_ids, :3], dim=1)
+        self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], self.goal_pos_b[env_ids, 3:7])
+        # Visualization
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
+        self.target_marker.visualize(self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
         
     
     def _compute_grasp_transforms(

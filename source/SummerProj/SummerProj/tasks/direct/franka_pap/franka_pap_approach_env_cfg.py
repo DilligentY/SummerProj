@@ -5,37 +5,21 @@
 
 from __future__ import annotations
 
-import torch
-
-from isaacsim.core.utils.stage import get_current_stage
-from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
-from pxr import UsdGeom
-
 import isaaclab.sim as sim_utils
-import isaaclab.envs.mdp as mdp
-from isaaclab_assets import KINOVA_GEN3_N7_CFG
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg, AssetBaseCfg
+from isaaclab.assets import  RigidObjectCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
-from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.sim import SimulationCfg
-from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.markers.config import CUBOID_MARKER_CFG
-from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
-from isaaclab.controllers import DifferentialIKControllerCfg
-from .franka_pap_env_cfg import FrankaPapEnvCfg
+from .franka_base_env_cfg import FrankaBaseEnvCfg
 
 
 @configclass
-class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
+class FrankaPapApproachEnvCfg(FrankaBaseEnvCfg):
     # env
     episode_length_s = 10.0
-    decimation = 2
+    decimation = 5
     action_space = 7
     observation_space = 28
     state_space = 0
@@ -53,28 +37,46 @@ class FrankaPapApproachEnvCfg(FrankaPapEnvCfg):
         ),
     )
 
-    # keypoints marker
-    keypoints_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
-        prim_path="/Visuals/keypoint",
-        markers={
-        "cuboid": sim_utils.CuboidCfg(
-            size=(0.01, 0.01, 0.01),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+    # object
+    object: RigidObjectCfg = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/Object",
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.0, 0.0], rot=[1, 0, 0, 0]),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
+                scale=(1.0, 1.0, 1.0),
+                rigid_props=RigidBodyPropertiesCfg(
+                    solver_position_iteration_count=16,
+                    solver_velocity_iteration_count=1,
+                    max_angular_velocity=1000.0,
+                    max_linear_velocity=1000.0,
+                    max_depenetration_velocity=5.0,
+                    disable_gravity=False,
+                ),
             ),
-        }    
-    )
+        )
 
-    # target keypoints marker
-    target_points_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
-        prim_path="/Visuals/keypoint",
-        markers={
-        "cuboid": sim_utils.CuboidCfg(
-            size=(0.01, 0.01, 0.01),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0),
-                                                        opacity=0.1),
-            ),
-        }    
-    )
+    # keypoints marker
+    # keypoints_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
+    #     prim_path="/Visuals/keypoint",
+    #     markers={
+    #     "cuboid": sim_utils.CuboidCfg(
+    #         size=(0.01, 0.01, 0.01),
+    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+    #         ),
+    #     }    
+    # )
+
+    # # target keypoints marker
+    # target_points_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
+    #     prim_path="/Visuals/keypoint",
+    #     markers={
+    #     "cuboid": sim_utils.CuboidCfg(
+    #         size=(0.01, 0.01, 0.01),
+    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0),
+    #                                                     opacity=0.1),
+    #         ),
+    #     }    
+    # )
 
     # reward hyperparameter
     alpha, beta = 10.0, 4.0

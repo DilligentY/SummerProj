@@ -5,13 +5,8 @@
 
 from __future__ import annotations
 
-import gymnasium as gym
 import numpy as np
 import torch
-
-from isaacsim.core.utils.stage import get_current_stage
-from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
-from pxr import UsdGeom
 from abc import abstractmethod
 
 import isaaclab.sim as sim_utils
@@ -21,17 +16,14 @@ from isaaclab.markers import VisualizationMarkers
 from isaaclab.controllers.joint_impedance import JointImpedanceController
 from isaaclab.controllers import DifferentialIKController
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.utils.math import subtract_frame_transforms
-from isaaclab.utils.math import quat_apply, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
-from isaaclab.envs import VecEnvStepReturn
+from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_mul, sample_uniform
 
-from .franka_pap_env_cfg import FrankaPapEnvCfg
+from .franka_base_env_cfg import FrankaBaseEnvCfg
 
-class FrankaPapBaseEnv(DirectRLEnv):
-    cfg: FrankaPapEnvCfg
+class FrankaBaseEnv(DirectRLEnv):
+    cfg: FrankaBaseEnvCfg
 
-    def __init__(self, cfg: FrankaPapEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: FrankaBaseEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         # Total env ids
@@ -44,20 +36,18 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.left_finger_joint_idx = self._robot.find_joints("panda_finger_joint1")[0][0]
         self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]
         self.right_finger_joint_idx = self._robot.find_joints("panda_finger_joint2")[0][0]
-        self.object_link_idx = self._object.find_bodies("Object")[0][0]
         self.finger_open_joint_pos = torch.full((self.scene.num_envs, 2), 0.04, device=self.scene.device)
 
         # Physics Limits
         self.num_active_joints = len(self.joint_idx)
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
-        self.robot_dof_stiffness_lower_limits = torch.tensor(self.cfg.controller.stiffness_limits[0], device=self.device)
-        self.robot_dof_stiffness_upper_limits = torch.tensor(self.cfg.controller.stiffness_limits[1], device=self.device)
-        self.robot_dof_damping_lower_limits = torch.tensor(self.cfg.controller.damping_ratio_limits[0], device=self.device)
-        self.robot_dof_damping_upper_limits = torch.tensor(self.cfg.controller.damping_ratio_limits[1], device=self.device)
+        self.robot_dof_stiffness_lower_limits = torch.tensor(self.cfg.imp_controller.stiffness_limits[0], device=self.device)
+        self.robot_dof_stiffness_upper_limits = torch.tensor(self.cfg.imp_controller.stiffness_limits[1], device=self.device)
+        self.robot_dof_damping_lower_limits = torch.tensor(self.cfg.imp_controller.damping_ratio_limits[0], device=self.device)
+        self.robot_dof_damping_upper_limits = torch.tensor(self.cfg.imp_controller.damping_ratio_limits[1], device=self.device)
 
         # Action Space
-        self.robot_prev_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_stiffness = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
         self.robot_damping_ratio = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
@@ -77,17 +67,17 @@ class FrankaPapBaseEnv(DirectRLEnv):
         self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
         
         # Joint Impedance Controller
-        self.controller = JointImpedanceController(cfg=self.cfg.controller,
-                                                   num_robots=self.num_envs,
-                                                   dof_pos_limits=self._robot.data.soft_joint_pos_limits[:, 0:self.num_active_joints, :],
-                                                   device=self.device)
+        self.imp_controller = JointImpedanceController(cfg=self.cfg.imp_controller,
+                                                       num_robots=self.num_envs,
+                                                       dof_pos_limits=self._robot.data.soft_joint_pos_limits[:, 0:self.num_active_joints, :],
+                                                       device=self.device)
         
         # IK Controller
         self.ik_controller = DifferentialIKController(cfg=self.cfg.ik_controller,
                                                       num_envs=self.num_envs,
                                                       device=self.device)
 
-        # Tcp marker
+        # TCP Marker
         self.tcp_marker = VisualizationMarkers(self.cfg.tcp_cfg)
 
         # unit tensors
@@ -97,10 +87,7 @@ class FrankaPapBaseEnv(DirectRLEnv):
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
-        self._object = RigidObject(self.cfg.object)
-
         self.scene.articulations["robot"] = self._robot
-        self.scene.rigid_objects["object"] = self._object
 
         spawn_ground_plane(prim_path=self.cfg.plane.prim_path, cfg=GroundPlaneCfg(), translation=(0.0, 0.0, -1.05))
         spawn = self.cfg.table.spawn
@@ -131,8 +118,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
     #     for _ in range(self.cfg.decimation):
     #         pass
 
-
-
     
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
@@ -145,9 +130,6 @@ class FrankaPapBaseEnv(DirectRLEnv):
         joint_pos[:, :self.num_active_joints] += pos_noise
         joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
-
-        # Intilialize Prev Joint Residual state for LPF
-        self.robot_prev_dof_residual = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
 
         # Publish to simulator
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
