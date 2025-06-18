@@ -4,6 +4,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Tutorial on spawning and interacting with an articulation.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to spawn.")
+parser.add_argument("--test_mode", type=str, default="tracking", choices=["withstand", "tracking", "plotting"])
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -87,6 +88,12 @@ class RobotSceneCfg(InteractiveSceneCfg):
         },
         ),
         )
+    # Impedance Controller를 사용하는 경우, 액추에이터 PD제어 모델 사용 X (중복 토크 계산)
+    # 액추에이터에 Impedance Controller가 붙음으로써 최하단 제어기의 역할을 하게 되는 개념.
+    robot.actuators["panda_shoulder"].stiffness = 0.0
+    robot.actuators["panda_shoulder"].damping = 0.0
+    robot.actuators["panda_forearm"].stiffness = 0.0
+    robot.actuators["panda_forearm"].damping = 0.0
 
 
 def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
@@ -95,7 +102,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     robot = scene["robot"]
     sim_dt = sim.get_physics_dt()
     
-    # 7개 조인트만
+    # 7개 조인트만 동작
     joint_ids = robot_entity_cfg.joint_ids
     n_j = len(joint_ids)
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -114,43 +121,254 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
                                                     num_robots=scene.num_envs,
                                                     dof_pos_limits=robot.data.joint_pos_limits[:, :n_j],
                                                     device=scene.device)
-    # Initial Configuration
+
+    # ---------- 환경 준비 ----------
+    n_j          = 7           # Franka: 9 (팔7+그리퍼2) 또는 7
+    sim_len      = 2.0                        # [s] 실험 길이
+    kp_table = torch.tensor([100, 300, 300, 300, 80, 80, 80], device=scene.device)
+    zeta         = 0.3                       # Damping ratio(=가상 댐퍼 비율)
+    joint_limits = robot.data.joint_pos_limits
+
+    # ---------- 슬라이스 정의 ----------
+    pos_slice       = slice(0, n_j)
+    stiff_slice     = slice(n_j, 2*n_j)
+    damp_slice      = slice(2*n_j, 3*n_j)
+
+    # ---------- 명령 버퍼 ----------
+    commands = torch.zeros(scene.num_envs,
+                        joint_imp_controller.num_actions,
+                        device=scene.device)
+    
+    # ---------- 초기값 설정 ----------
     zero_joint_efforts = torch.zeros(scene.num_envs, n_j, device=sim.device)
     q_init   = robot.data.default_joint_pos.clone()
     q_dot_init = robot.data.default_joint_vel.clone()
     q_target = q_init[:, :n_j].clone()
-
-    # Update Buffer
     robot.update(sim_dt)
     
-    count = 0
-    while simulation_app.is_running():
-        # reset joint state to default
-        if count % 500 == 0:
-            print("[INFO] Reset state ...")
-            default_joint_pos = robot.data.default_joint_pos.clone()
-            default_joint_vel = robot.data.default_joint_vel.clone()
-            # 강제로 조인트 워프 -> 초기 Configuration 세팅
-            robot.write_joint_state_to_sim(default_joint_pos, default_joint_vel)
-            # 내부 버퍼에 토크 저장 -> 텔레포트가 아닌 제어 입력을 위한 명령 신호
-            robot.set_joint_effort_target(zero_joint_efforts, joint_ids=joint_ids)
-            # 버퍼에 쓰인 전체 데이터 복사
-            robot.write_data_to_sim()
-            robot.reset()
+
+    # --- 제어 로직 루프 --------------------------
+    if args_cli.test_mode == "withstand":
+        count = 0
+        while simulation_app.is_running():
+            if count % 500 == 0:
+                # reset joint state to default
+                print("[INFO] Reset state ...")
+                default_joint_pos = robot.data.default_joint_pos.clone()
+                default_joint_vel = robot.data.default_joint_vel.clone()
+                # 강제로 조인트 워프 -> 초기 Configuration 재 설정
+                robot.write_joint_state_to_sim(default_joint_pos, default_joint_vel)
+                # 내부 버퍼에 토크 저장 -> 텔레포트가 아닌 실제 제어 입력을 위한 명령 신호
+                robot.set_joint_effort_target(zero_joint_efforts, joint_ids=joint_ids)
+                # 버퍼에 쓰인 전체 제어명령 전부 실행
+                robot.write_data_to_sim()
+                robot.reset()
+                robot.update(sim_dt)
+            else:
+                # --------- 임피던스 제어 로직 ------------
+                # 1) 상대 offset 계산
+                joint_pos = robot.data.joint_pos[:, :n_j]
+                q_des_rel =  q_target - joint_pos
+                # print(f"target joint : {q_target}")
+                # print(f"current joint : {joint_pos}")
+
+                # 2) commands 채우기
+                commands.zero_()
+                commands[:, pos_slice]   = q_des_rel
+                commands[:, stiff_slice] = kp_table      
+                commands[:, damp_slice]  = zeta
+
+                # 3) set_command → compute 순서 : Pure Torque 신호 생성
+                joint_imp_controller.set_command(commands)
+                tau = joint_imp_controller.compute(
+                    dof_pos      = robot.data.joint_pos[:, :n_j],
+                    dof_vel      = robot.data.joint_vel[:, :n_j],
+                    mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :n_j, :n_j],
+                    gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, :n_j]
+                )
+
+                ####################################################################################
+                # 4) 실제 Torque 신호 내부 버퍼에 저장 -> 액추에이터 모델로부터 최종 토크 계산 위함
+                #### 만약, Direct로 Effort를 줄 생각이면, 액추에이터 쪽 PD제어 로직을 꺼야한다.
+                ####################################################################################
+                robot.set_joint_effort_target(tau, joint_ids=joint_ids)
+
+                # 타겟 조인트 포지션 버퍼에 저장 -> 실제 액추에이터 PD제어기로 인해 토크 계산을 위함
+                # robot.set_joint_position_target(default_joint_pos[:, :n_j], joint_ids=robot_entity_cfg.joint_ids)
+                # 버퍼에 세팅된 제어 명령 전부 실행
+                robot.write_data_to_sim()
+
+            # 물리 시뮬레이션 스텝
+            sim.step()
             robot.update(sim_dt)
-        else:
-            pass
-        
-        # 타겟 조인트 포지션 버퍼에 저장 -> 실제 액추에이터 PD제어기로 인해 토크 계산을 위함
-        robot.set_joint_position_target(default_joint_pos[:, :n_j], joint_ids=robot_entity_cfg.joint_ids)
-        # 세팅된 제어 명령 전부 실행 -> set으로 저장해둔 신호들이 모두 실행
-        robot.write_data_to_sim()
-        sim.step()
-        robot.update(sim_dt)
-        scene.update(sim_dt)
-        count += 1
+            scene.update(sim_dt)
+            count += 1
+
+    elif args_cli.test_mode == "plotting":
+        first = True
+        log_t = []
+        log_q = []
+
+        q_target[:, 2] += 0.5
+        q_target[:, 3] += 0.3
+        q_target[:, 4] += 1.0
+        q_target[:, 6] += 1.56
+
+        i = 1
+        t = 0.0
+        while t <= sim_len:
+            if first:
+                # reset joint state to default
+                first = False
+                print("[INFO] Reset state ...")
+                default_joint_pos = robot.data.default_joint_pos.clone()
+                default_joint_vel = robot.data.default_joint_vel.clone()
+                # 강제로 조인트 워프 -> 초기 Configuration 재 설정
+                robot.write_joint_state_to_sim(default_joint_pos, default_joint_vel)
+                # 내부 버퍼에 토크 저장 -> 텔레포트가 아닌 실제 제어 입력을 위한 명령 신호
+                robot.set_joint_effort_target(zero_joint_efforts, joint_ids=joint_ids)
+                # 버퍼에 쓰인 전체 제어명령 전부 실행
+                robot.write_data_to_sim()
+                robot.reset()
+                robot.update(sim_dt)
+                # 0초 기록
+                log_t.append(0.0)
+                log_q.append(robot.data.joint_pos[:, :n_j].clone())
+
+            # --------- 임피던스 제어 로직 ------------
+            # 1) 상대 offset 계산
+            joint_pos = robot.data.joint_pos[:, :n_j]
+            q_des_rel =  q_target - joint_pos
+            print(f"target joint : {q_target}")
+            print(f"current joint : {joint_pos}")
+
+            # 2) commands 채우기
+            commands.zero_()
+            commands[:, pos_slice]   = q_des_rel
+            commands[:, stiff_slice] = kp_table      
+            commands[:, damp_slice]  = zeta
+
+            # 3) set_command → compute 순서 : Pure Torque 신호 생성
+            joint_imp_controller.set_command(commands)
+            tau = joint_imp_controller.compute(
+                dof_pos      = robot.data.joint_pos[:, :n_j],
+                dof_vel      = robot.data.joint_vel[:, :n_j],
+                mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :n_j, :n_j],
+                gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, :n_j]
+            )
+
+            ####################################################################################
+            # 4) 실제 Torque 신호 내부 버퍼에 저장 -> 액추에이터 모델로부터 최종 토크 계산 위함
+            #### 만약, Direct로 Effort를 줄 생각이면, 액추에이터 쪽 PD제어 로직을 꺼야한다.
+            ####################################################################################
+            robot.set_joint_effort_target(tau, joint_ids=joint_ids)
+
+            # 5) 타겟 조인트 포지션 버퍼에 저장 -> 실제 액추에이터 PD제어기로 인해 토크 계산을 위함
+            # 버퍼에 세팅된 제어 명령 전부 실행
+            robot.write_data_to_sim()
+
+            # 6) 물리 시뮬레이션 스텝
+            sim.step()
+            robot.update(sim_dt)
+            scene.update(sim_dt)
+            t += sim_dt
+
+            # 7) 로그 저장
+            log_t.append(t)
+            log_q.append(robot.data.joint_pos[:, :n_j].clone())
 
 
+        # --- 결과 플롯 -------------------------------------------------
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import math
+        log_t_np = np.asarray(log_t)
+        log_q_np = torch.stack(log_q, dim=0).cpu().numpy().squeeze(1)
+
+        n_cols = 3                                    # 한 줄에 최대 3장씩
+        n_rows = math.ceil(n_j / n_cols)              # 필요한 줄 수
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                figsize=(4*n_cols, 3*n_rows),
+                                sharex=True)         # 시간축 공유
+        axes = axes.flatten()                         # 1-D로 편리하게
+
+        for i in range(n_j):
+            ax = axes[i]
+            ax.plot(log_t_np, log_q_np[:, i], label="actual")
+            ax.axhline(joint_limits[0, i, 0].cpu(), ls="--", label="lower_limit", color='r')
+            ax.axhline(joint_limits[0, i, 1].cpu(), ls="--", label="upper_limit", color='g')
+            ax.axhline(q_target[0, i].cpu(),         ls="--", label="target", color="k")
+            ax.set_title(f"Joint {i}")
+            ax.set_ylabel("angle [rad]")
+            if i // n_cols == n_rows - 1:         
+                ax.set_xlabel("time [s]")
+            # 범례는 첫 번째 서브플롯에만
+            if i == 0:
+                ax.legend(loc="best")
+        fig.tight_layout()
+        plt.show()
+    
+    elif args_cli.test_mode == "tracking":
+        q_low  = joint_limits[0, :n_j, 0]
+        q_high = joint_limits[0, :n_j, 1]
+        t = 0.0
+        q_target = robot.data.default_joint_pos.clone()[:, :n_j]
+        q_target[:, 3] += 0.3 
+        while simulation_app.is_running():
+            if t > sim_len:
+                # reset joint state to default
+                print("[INFO] Reset state ...")
+                t = 0.0
+                default_joint_pos = robot.data.default_joint_pos.clone()
+                default_joint_vel = robot.data.default_joint_vel.clone()
+                # 강제로 조인트 워프 -> 초기 Configuration 재 설정
+                robot.write_joint_state_to_sim(default_joint_pos, default_joint_vel)
+                # 내부 버퍼에 토크 저장 -> 텔레포트가 아닌 실제 제어 입력을 위한 명령 신호
+                robot.set_joint_effort_target(zero_joint_efforts, joint_ids=joint_ids)
+                # 버퍼에 쓰인 전체 제어명령 전부 실행
+                robot.write_data_to_sim()
+                robot.reset()
+                robot.update(sim_dt)
+                # Target Joint Angle 생성
+                # q_target = torch.rand_like(q_target).mul(q_high - q_low).add(q_low)
+
+            # --------- 임피던스 제어 로직 ------------
+            # 1) 상대 offset 계산
+            joint_pos = robot.data.joint_pos[:, :n_j]
+            q_des_rel =  q_target - joint_pos
+            print(f"target joint : {q_target}")
+            print(f"current joint : {joint_pos}")
+
+            # 2) commands 채우기
+            commands.zero_()
+            commands[:, pos_slice]   = q_des_rel
+            commands[:, stiff_slice] = kp_table      
+            commands[:, damp_slice]  = zeta
+
+            # 3) set_command → compute 순서 : Pure Torque 신호 생성
+            joint_imp_controller.set_command(commands)
+            tau = joint_imp_controller.compute(
+                dof_pos      = robot.data.joint_pos[:, :n_j],
+                dof_vel      = robot.data.joint_vel[:, :n_j],
+                mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :n_j, :n_j],
+                gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, :n_j]
+            )
+
+            ####################################################################################
+            # 4) 실제 Torque 신호 내부 버퍼에 저장 -> 액추에이터 모델로부터 최종 토크 계산 위함
+            #### 만약, Direct로 Effort를 줄 생각이면, 액추에이터 쪽 PD제어 로직을 꺼야한다.
+            ####################################################################################
+            robot.set_joint_effort_target(tau, joint_ids=joint_ids)
+
+            # 5) 타겟 조인트 포지션 버퍼에 저장 -> 실제 액추에이터 PD제어기로 인해 토크 계산을 위함
+            # 버퍼에 세팅된 제어 명령 전부 실행
+            robot.write_data_to_sim()
+
+            # 6) 물리 시뮬레이션 스텝
+            sim.step()
+            robot.update(sim_dt)
+            scene.update(sim_dt)
+            t += sim_dt
 
 
 def main():
@@ -159,7 +377,7 @@ def main():
     sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
-    sim.set_camera_view([2.5, 2.5, 4.5], [0.0, 0.0, 0.0])
+    sim.set_camera_view([2.5, 2.5, 4.0], [0.0, 0.0, 0.0])
     # Design scene
     scene_cfg = RobotSceneCfg(num_envs=args_cli.num_envs, env_spacing=2.0)
     scene = InteractiveScene(scene_cfg)
