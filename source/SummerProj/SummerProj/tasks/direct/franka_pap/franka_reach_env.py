@@ -42,6 +42,7 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # Object Move Checker & Success Checker
         self.prev_loc_error = torch.zeros(self.num_envs, device=self.device)
+        self.prev_rot_error = torch.zeros(self.num_envs, device=self.device)
         self.loc_error = torch.zeros(self.num_envs, device=self.device)
         self.rot_error = torch.zeros(self.num_envs, device=self.device)
         self.is_reach = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -136,16 +137,23 @@ class FrankaReachEnv(FrankaBaseEnv):
         # Action Penalty
         action_norm = torch.norm(self.actions[:, 6:13], dim=1)
 
-        # Approach Reward: Potential Based Reward Shaping
+        # =========== Approach Reward: Potential Based Reward Shaping =============
         gamma = 0.99
         phi_s_prime = -torch.log(20 * self.loc_error + 1)
         phi_s = -torch.log(20 * self.prev_loc_error + 1)
-        r_pos = gamma*phi_s_prime - phi_s 
 
-        # Success Reward : Goal Reach
+        phi_s_prime_rot = -torch.log(20 * self.rot_error + 1)
+        phi_s_rot = -torch.log(20 * self.prev_rot_error + 1)
+
+        r_pos = gamma*phi_s_prime - phi_s 
+        r_rot = gamma*phi_s_prime_rot - phi_s_rot
+
+        # =========== Success Reward : Goal Reach ============
         r_success = self.is_reach.float()
         
-        reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * action_norm + r_success
+        # =========== Summation =============
+        # IK에서 지정한 Command값을 얼마나 잘 추종했는가? 에 대한 보상도 함께 있으면 좋아보인다.. 우선 보류
+        reward = self.cfg.w_pos * r_pos + self.cfg.w_rot * r_rot - self.cfg.w_penalty * action_norm + r_success
 
         # print(f"reward of env1 : {reward[0]}")
 
@@ -240,6 +248,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - self.goal_pos_b[env_ids, :3], dim=1)
         # Rotation
+        self.prev_rot_error[env_ids] = self.rot_error[env_ids]
         self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], self.goal_pos_b[env_ids, 3:7])
         
         # ======== Visualization ==========
