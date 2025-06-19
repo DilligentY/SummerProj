@@ -39,6 +39,8 @@ class FrankaBaseEnv(DirectRLEnv):
         self.finger_open_joint_pos = torch.full((self.scene.num_envs, 2), 0.04, device=self.scene.device)
 
         # Physics Limits
+        self.robot_dof_res_lower_limits = torch.tensor(-self.cfg.joint_res_clipping, device=self.device)
+        self.robot_dof_res_upper_limits = torch.tensor(self.cfg.joint_res_clipping, device=self.device)
         self.num_active_joints = len(self.joint_idx)
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)

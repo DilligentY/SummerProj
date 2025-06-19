@@ -187,7 +187,7 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
     # Joint Control Action scale
     loc_res_scale = 0.2
     rot_res_scale = 0.1
-    joint_res_scale = 0.2
+    joint_res_clipping = 0.2
     stiffness_scale = imp_controller.stiffness_limits[1]
     damping_scale = imp_controller.damping_ratio_limits[1]
 

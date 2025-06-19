@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from isaaclab.utils.math import quat_error_magnitude, subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, quat_apply
+from isaaclab.utils.math import quat_error_magnitude, subtract_frame_transforms, quat_from_angle_axis, quat_mul, sample_uniform, quat_apply, saturate
 from isaaclab.markers import VisualizationMarkers
 
 from .franka_base_env import FrankaBaseEnv
@@ -51,8 +51,9 @@ class FrankaReachEnv(FrankaBaseEnv):
                             [self.cfg.reset_position_noise_x, self.cfg.reset_position_noise_y],
                             device=self.device,)
         
-        # Goal point marker
+        # Goal point & Via point marker
         self.target_marker = VisualizationMarkers(self.cfg.goal_pos_marker_cfg)
+        self.via_marker = VisualizationMarkers(self.cfg.via_pos_marker_cfg)
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -107,10 +108,15 @@ class FrankaReachEnv(FrankaBaseEnv):
                                                    robot_grasp_rot_b, 
                                                    jacobian, 
                                                    robot_joint_pos)
-        
-
+    
         # ======== Joint Impedance Regulator ========
-        res_joint_pos = joint_pos_des - robot_joint_pos
+        # 안정적 학습을 위한 Joint Cliiping (이후, Residual Curriculum으로 확장 예정)
+        res_joint_pos = saturate(joint_pos_des - robot_joint_pos,
+                                 self.robot_dof_res_lower_limits, 
+                                 self.robot_dof_res_upper_limits)
+        
+        # print(f"res_joint : {res_joint_pos[0, :]}")
+        
         self.imp_commands[:, :self.num_active_joints] = res_joint_pos
         self.imp_controller.set_command(self.imp_commands)
         des_torque = self.imp_controller.compute(dof_pos=robot_joint_pos,
@@ -143,7 +149,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         
         reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * action_norm + r_success
 
-        print(f"reward of env1 : {reward[0]}")
+        # print(f"reward of env1 : {reward[0]}")
 
         return reward
     
@@ -239,6 +245,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], self.goal_pos_b[env_ids, 3:7])
         
         # ======== Visualization ==========
+        self.via_marker.visualize(self.processed_actions[:, :3] + self.robot_grasp_pos_w[:, :3])
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
         self.target_marker.visualize(self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
         

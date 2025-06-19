@@ -10,7 +10,7 @@ from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.markers.config import FRAME_MARKER_CFG
+from isaaclab.markers.config import FRAME_MARKER_CFG, CUBOID_MARKER_CFG
 from .franka_base_env_cfg import FrankaBaseEnvCfg
 
 
@@ -46,8 +46,11 @@ class FrankaReachEnvCfg(FrankaBaseEnvCfg):
         }
     )
 
+    via_pos_marker_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
+        prim_path="Visuals/via_marker")
+
 
     # reward hyperparameter
     alpha, beta = 10.0, 4.0
-    w_pos = 15.0
-    w_penalty = 0.5
+    w_pos = 20.0
+    w_penalty = 0.3
