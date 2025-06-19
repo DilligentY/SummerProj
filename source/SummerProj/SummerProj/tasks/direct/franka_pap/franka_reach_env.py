@@ -76,6 +76,7 @@ class FrankaReachEnv(FrankaBaseEnv):
                                                      self.robot_dof_damping_upper_limits) 
         
         # ===== IK Command 세팅 =====
+        # print(f"delta_pose = {self.processed_actions[0, :6]}")
         self.ik_controller.set_command(self.processed_actions[:, :6],
                                        self.robot_grasp_pos_b[:, :3],
                                        self.robot_grasp_pos_b[:, 3:7])
@@ -83,6 +84,9 @@ class FrankaReachEnv(FrankaBaseEnv):
         # ===== Impedance Controller Gain 세팅 =====
         self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
         self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 13:]
+
+        print(f"kp = {self.processed_actions[0, 6:13]}")
+        print(f"damping= {self.processed_actions[0, 13:]}")
         
 
     def _apply_action(self) -> None:
@@ -155,7 +159,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # IK에서 지정한 Command값을 얼마나 잘 추종했는가? 에 대한 보상도 함께 있으면 좋아보인다.. 우선 보류
         reward = self.cfg.w_pos * r_pos + self.cfg.w_rot * r_rot - self.cfg.w_penalty * action_norm + r_success
 
-        # print(f"reward of env1 : {reward[0]}")
+        print(f"reward of env1 : {reward[0]}")
 
         return reward
     
@@ -163,7 +167,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # Object 및 Robot의 상태를 포함한 Observation vector 생성
         joint_pos_scaled = (
             2.0
-            * (self._robot.data.joint_pos - self.robot_dof_lower_limits)
+            * (self.robot_joint_pos - self.robot_dof_lower_limits)
             / (self.robot_dof_upper_limits - self.robot_dof_lower_limits)
             - 1.0
         )
