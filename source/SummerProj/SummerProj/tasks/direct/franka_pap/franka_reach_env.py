@@ -115,8 +115,6 @@ class FrankaReachEnv(FrankaBaseEnv):
                                  self.robot_dof_res_lower_limits, 
                                  self.robot_dof_res_upper_limits)
         
-        # print(f"res_joint : {res_joint_pos[0, :]}")
-        
         self.imp_commands[:, :self.num_active_joints] = res_joint_pos
         self.imp_controller.set_command(self.imp_commands)
         des_torque = self.imp_controller.compute(dof_pos=robot_joint_pos,
