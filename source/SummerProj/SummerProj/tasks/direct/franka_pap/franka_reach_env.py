@@ -143,7 +143,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         
         reward = self.cfg.w_pos * r_pos - self.cfg.w_penalty * action_norm + r_success
 
-        # print(f"reward of env1 : {reward[0]}")
+        print(f"reward of env1 : {reward[0]}")
 
         return reward
     
