@@ -106,6 +106,12 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
             "panda_finger_joint.*": 0.04,
         },
         ))
+    # Impedance Controller를 사용하는 경우, 액추에이터 PD제어 모델 사용 X (중복 토크 계산)
+    # 액추에이터에 Impedance Controller가 붙음으로써 최하단 제어기의 역할을 하게 되는 개념.
+    robot.actuators["panda_shoulder"].stiffness = 0.0
+    robot.actuators["panda_shoulder"].damping = 0.0
+    robot.actuators["panda_forearm"].stiffness = 0.0
+    robot.actuators["panda_forearm"].damping = 0.0
 
     # ground plane
     plane = AssetBaseCfg(
@@ -161,9 +167,10 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
         command_type="p_rel",
         dof_pos_offset=None,
         impedance_mode="variable",
-        stiffness=100.0,
+        stiffness=300.0,
         damping_ratio=0.5,
-        stiffness_limits=(0, 300),
+        stiffness_limits=(0, 500),
+        damping_ratio_limits=(0, 5),
         inertial_compensation=True,
         gravity_compensation=True,)
     
@@ -177,13 +184,13 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
     robot_entity: SceneEntityCfg = SceneEntityCfg(
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
-    # Action scale
+    # Joint Control Action scale
     loc_res_scale = 0.2
     rot_res_scale = 0.1
     joint_res_scale = 0.2
     stiffness_scale = imp_controller.stiffness_limits[1]
     damping_scale = imp_controller.damping_ratio_limits[1]
 
-    # reset
+    # target point reset
     reset_position_noise_x = 0.1
     reset_position_noise_y = 0.2

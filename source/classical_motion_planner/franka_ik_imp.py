@@ -50,7 +50,7 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.controllers.joint_impedance import JointImpedanceController, JointImpedanceControllerCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, quat_apply
+from isaaclab.utils.math import subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, quat_apply, quat_error_magnitude
 
 from RRT.RRT_wrapper import RRTWrapper
 from utils import Env
@@ -90,7 +90,14 @@ class RobotSceneCfg(InteractiveSceneCfg):
             "panda_joint7": 0.741,
             "panda_finger_joint.*": 0.04,
         },
-        ))
+        )
+        )
+    # Impedance Controller를 사용하는 경우, 액추에이터 PD제어 모델 사용 X (중복 토크 계산)
+    # 액추에이터에 Impedance Controller가 붙음으로써 최하단 제어기의 역할을 하게 되는 개념.
+    robot.actuators["panda_shoulder"].stiffness = 0.0
+    robot.actuators["panda_shoulder"].damping = 0.0
+    robot.actuators["panda_forearm"].stiffness = 0.0
+    robot.actuators["panda_forearm"].damping = 0.0
     
     object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
@@ -115,13 +122,12 @@ class RobotSceneCfg(InteractiveSceneCfg):
 
 
 def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
-    # Setup the scene
+    # ============== Setup the scene =================
     robot_entity_cfg = SceneEntityCfg("robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
     robot_entity_cfg.resolve(scene)
 
     robot = scene["robot"]
     object = scene["object"]
-
 
     point_marker_cfg = CUBOID_MARKER_CFG.copy()
     point_marker_cfg.markers["cuboid"].size = (0.01, 0.01, 0.01)
@@ -146,7 +152,9 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
                                                     num_robots=scene.num_envs,
                                                     dof_pos_limits=robot.data.joint_pos_limits[:, :num_active_joint],
                                                     device=scene.device)
-
+    
+    # =============== Link and Joint Indexs =================
+    joint_ids = robot_entity_cfg.joint_ids
     hand_link_idx = robot.find_bodies("panda_link7")[0][0]
     left_finger_link_idx = robot.find_bodies("panda_leftfinger")[0][0]
     left_finger_joint_idx = robot.find_joints("panda_finger_joint1")[0][0]
@@ -154,59 +162,97 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     right_finger_joint_idx = robot.find_joints("panda_finger_joint2")[0][0]
     finger_open_joint_pos = torch.full((scene.num_envs, 2), 0.04, device=scene.device)
     finger_ids = torch.tensor([left_finger_joint_idx, right_finger_joint_idx], device=scene.device)
-
-
     if robot.is_fixed_base:
         jacobi_idx = robot_entity_cfg.body_ids[0] - 1
     else:
         jacobi_idx = robot_entity_cfg.body_ids[0]
 
-    i = 0
-    sim_dt = sim.get_physics_dt()
-    joint_pos = robot.data.default_joint_pos.clone()
-    joint_vel = robot.data.default_joint_vel.clone()
-    robot.write_joint_state_to_sim(joint_pos, joint_vel)
-    robot.reset()
-    joint_pos_des = joint_pos[:, robot_entity_cfg.joint_ids].clone()
+    
+    # ================ Initial Setting ====================
+    # ---------- 환경 준비 ----------
+    sim_dt = scene.physics_dt
+    n_j          = 7           # Franka: 9 (팔7+그리퍼2) 또는 7
+    kp_table = torch.tensor([100, 80, 80, 80, 80, 80, 80], device=scene.device)
+    zeta         = 0.3                       # Damping ratio(=가상 댐퍼 비율)
+    joint_limits = robot.data.joint_pos_limits
 
-    # Reference Frame : Robot Base Frame
+    # ---------- 슬라이스 정의 ----------
+    pos_slice       = slice(0, n_j)
+    stiff_slice     = slice(n_j, 2*n_j)
+    damp_slice      = slice(2*n_j, 3*n_j)
+
+    # ---------- 명령 버퍼 ----------
+    ik_commands = torch.zeros(scene.num_envs, diff_ik_controller.action_dim, device=scene.device)
+    imp_commands = torch.zeros(scene.num_envs,
+                               joint_imp_controller.num_actions,
+                               device=scene.device)
+    
+    # ---------- 초기값 설정 ----------
+    zero_joint_efforts = torch.zeros(scene.num_envs, n_j, device=sim.device)
+    q_init   = robot.data.default_joint_pos.clone()
+    q_dot_init = robot.data.default_joint_vel.clone()
+    q_target = q_init[:, :n_j].clone()
+
+    # --------- 로봇 및 오브젝트 초기화 ---------
+    joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
+    robot.write_joint_state_to_sim(joint_pos, joint_vel)
+    robot.set_joint_effort_target(zero_joint_efforts, joint_ids=joint_ids)
+    robot.write_data_to_sim()
+
+    object_root_state = object.data.default_root_state.clone()
+    object_root_state[:, :3] += scene.env_origins
+    object.write_root_pose_to_sim(object_root_state[:, :7])
+    object.write_root_velocity_to_sim(object_root_state[:, 7:])
+
+    object.reset()
+    robot.reset()
+    scene.reset()
+    robot.update(sim_dt)
+
+    # ============ Motion Planner Setting (RRT & IK) ===============
+    # ------- TCP 6D Pose 정의 (월드 프레임, Root 프레임) -------
     root_start_w = robot.data.root_state_w[:, :7]
     lfinger_start_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
     rfinger_start_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
     tcp_start_loc_w = (lfinger_start_w[:, :3] + rfinger_start_w[:, :3]) / 2.0 + quat_apply(lfinger_start_w[:, 3:7], torch.tensor([0.0, 0.0, 0.045], device=scene.device))
     tcp_start_pose_w = torch.cat((tcp_start_loc_w, lfinger_start_w[:, 3:7]), dim=1)
-
     tcp_start_loc_b, tcp_start_rot_b = subtract_frame_transforms(
         root_start_w[:, :3], root_start_w[:, 3:7], tcp_start_pose_w[:, :3], tcp_start_pose_w[:, 3:7])
     tcp_start_pose_b = torch.cat((tcp_start_loc_b, tcp_start_rot_b), dim=1)
 
-    # Target End-Effector Pose -> Keypoints from the Cube Object
+    # ------- Target End-Effector Position 정의 --------
     object_pose_w = object.data.root_state_w[:, :7]
     object_loc_b, object_rot_b = subtract_frame_transforms(
-         root_start_w[:, :3], root_start_w[:, 3:7], object_pose_w[:, :3], object_pose_w[:, 3:7]
-    )
+         root_start_w[:, :3], root_start_w[:, 3:7], object_pose_w[:, :3], object_pose_w[:, 3:7])
     object_pose_b = torch.cat([object_loc_b, object_rot_b], dim=1)
-    object_pose_b[:, 3:7] = torch.tensor([0.0, 0.0, 0.0, 0.0], device=scene.device)
+    object_pose_b[:, 1] -= 0.6
+    object_pose_b[:, 2] += 0.3
+    object_pose_b[:, 3:7] = torch.tensor([0.3, 0.2, 0.0, 0.0], device=scene.device)
     
-    # Motion Planning : RRT
+    # ------- Trajectory Planner : RRT -------
     motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=object_pose_b.squeeze_(0), env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
     optimal_trajectory = motion_planner.plan()
-    
-    # Commands for IK and Imp Control
-    ik_commands = torch.zeros(scene.num_envs, diff_ik_controller.action_dim, device=scene.device)
+
+    # ------- Motion Planner : Inverse Kinematics -------
     ik_commands[:, :3] = optimal_trajectory[0, :3]
     ik_commands[:, 3:] = optimal_trajectory[0, 3:7]
-
-    stiffness = 300
-    damping_ratio = 0.3
-    imp_commands = torch.zeros([scene.num_envs, joint_imp_controller.num_actions], device=scene.device)
-    imp_commands[:, 7:14] = stiffness
-    imp_commands[:, 14:] = damping_ratio
-
     diff_ik_controller.reset()
     diff_ik_controller.set_command(ik_commands, tcp_start_pose_b[:3], tcp_start_pose_b[3:7])
-    while simulation_app.is_running():
 
+
+
+    # ========== Low-Level Controller (Joint Impadance Regulation) ===========
+    # ------- Impedance Control Command 세팅 -------
+    imp_commands[:, 7:14] = kp_table
+    imp_commands[:, 14:] = zeta
+
+
+
+    # ========== 제어 루프 ======================================
+    i = 0
+    while simulation_app.is_running():
+        
+        # --------- TCP의 6D Pose Error 세팅 ---------
         # Get the root & joint Pose in world frame
         root_pose_w = robot.data.root_state_w[:, :7]
         # Get the tcp pose in world frame
@@ -218,60 +264,66 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         tcp_loc_b, tcp_rot_b = subtract_frame_transforms(
                 root_pose_w[:, :3], root_pose_w[:, 3:7], tcp_pose_w[:, :3], tcp_pose_w[:, 3:7])
         tcp_pose_b = torch.cat((tcp_loc_b, tcp_rot_b), dim=1)
-
         # Compute the position error in the base frame
         tcp_pos_err_b = tcp_pose_b[:, :3] - ik_commands[:, :3]
-        if torch.norm(tcp_pos_err_b) < 5e-2:
-            i = (i+1) % optimal_trajectory.shape[0]
+        tcp_rot_err_b = quat_error_magnitude(tcp_pose_b[:, 3:7], ik_commands[:, 3:])
+
+        # --------- Target Points 갱신 로직 ---------
+        if torch.norm(tcp_pos_err_b) < 5e-2 and tcp_rot_err_b < 5e-2:
+            i = (i+1) %  optimal_trajectory.shape[0]
             if i == 0:
-                # Reset the Scene
+                # Trajectory 끝에 도착하면, Reset the Scene
+                print("[INFO]: Resetting robot state...")
                 root_state = robot.data.default_root_state.clone()
                 root_state[:, :3] += scene.env_origins
-                robot.write_root_pose_to_sim(root_state[:, :7])
-                robot.write_root_velocity_to_sim(root_state[:, 7:])
                 joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
                 robot.write_joint_state_to_sim(joint_pos, joint_vel)
+                robot.set_joint_effort_target(zero_joint_efforts, joint_ids=joint_ids)
 
                 object_root_state = object.data.default_root_state.clone()
                 object_root_state[:, :3] += scene.env_origins
                 object.write_root_pose_to_sim(object_root_state[:, :7])
                 object.write_root_velocity_to_sim(object_root_state[:, 7:])
+                robot.write_data_to_sim()
 
                 object.reset()
                 robot.reset()
                 scene.reset()
-                print("[INFO]: Resetting robot state...")
+                robot.update(sim_dt)
+            # IK Command를 Next Point로 갱신
             ik_commands[:, :] = optimal_trajectory[i, :]
             diff_ik_controller.set_command(ik_commands, tcp_pose_b[:, :3], tcp_pose_b[:, 3:7])
 
+        # --------- Controller 동작 (IK) -------------
         # Compute Jacobian
         jacobian = robot.root_physx_view.get_jacobians()[:, jacobi_idx, :, robot_entity_cfg.joint_ids]
-
         # Get the root & joint Pose in world frame
         joint_pos = robot.data.joint_pos[:, robot_entity_cfg.joint_ids]
         joint_vel = robot.data.joint_vel[:, robot_entity_cfg.joint_ids]
-
         # Compute the desired joint position using the IK and the end-effector pose from the base frame
         joint_pos_des = diff_ik_controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
 
+        
+        # --------- Controller 동작 (Impedance) ---------
         # Set command for Impedance control
         imp_commands[:, :7] = joint_pos_des - joint_pos
         joint_imp_controller.set_command(command=imp_commands)
-
-        # calculate target torques
+        # Target torques 계산 (중력, 관성, 코리올리 힘 보상)
         tau = joint_imp_controller.compute(
             dof_pos      = joint_pos,
             dof_vel      = joint_vel,
             mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :num_active_joint, :num_active_joint],
             gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, robot_entity_cfg.joint_ids]
         )
-
+        # Torque 신호 내부 버퍼에 저장
         robot.set_joint_effort_target(tau, joint_ids=robot_entity_cfg.joint_ids)
-        # robot.set_joint_position_target(joint_pos_des, joint_ids=robot_entity_cfg.joint_ids)
-        # robot.set_joint_position_target(finger_open_joint_pos, joint_ids=finger_ids)
-        scene.write_data_to_sim()
+        # 버퍼에 저장된 제어 신호 시뮬레이션에 모두 입력
+        robot.write_data_to_sim()
+
+        # 물리 엔진 스텝
         sim.step()
         scene.update(sim_dt)
+        robot.update(sim_dt)
 
         lfinger_pose_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
         rfinger_pose_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
@@ -280,18 +332,17 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
         tcp_marker.visualize(tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
         traj_marker.visualize(optimal_trajectory[:, :3] + scene.env_origins + robot.data.default_root_state[:, :3])
-        # goal_marker.visualize(target_keypoint_w[:, :3], target_keypoint_w[:, 3:7])
         goal_marker.visualize(object_pose_w[:, :3], object_pose_w[:, 3:7])
         
 
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
+    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, dt=0.01)
     sim = SimulationContext(sim_cfg)
     sim_dt = sim.get_physics_dt()
     # Set main camera
-    sim.set_camera_view([2.5, 2.5, 2.5], [0.0, 0.0, 0.0])
+    sim.set_camera_view([2.5, 2.5, 4.0], [0.0, 0.0, 0.0])
     # Design scene
     scene_cfg = RobotSceneCfg(num_envs=args_cli.num_envs, env_spacing=2.0)
     scene = InteractiveScene(scene_cfg)

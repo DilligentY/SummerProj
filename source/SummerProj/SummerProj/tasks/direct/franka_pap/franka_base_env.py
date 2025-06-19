@@ -47,10 +47,6 @@ class FrankaBaseEnv(DirectRLEnv):
         self.robot_dof_damping_lower_limits = torch.tensor(self.cfg.imp_controller.damping_ratio_limits[0], device=self.device)
         self.robot_dof_damping_upper_limits = torch.tensor(self.cfg.imp_controller.damping_ratio_limits[1], device=self.device)
 
-        # Action Space
-        self.robot_stiffness = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
-        self.robot_damping_ratio = torch.zeros((self.num_envs, self.num_active_joints), device=self.device)
-
         # Default Object and Robot Pose
         self.robot_joint_pos = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
         self.robot_joint_vel = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
@@ -59,11 +55,8 @@ class FrankaBaseEnv(DirectRLEnv):
         self.object_linvel = torch.zeros((self.num_envs, 3), device=self.device)
         self.object_angvel = torch.zeros((self.num_envs, 3), device=self.device)
 
-        # Default TCP Pose
+        # Default TCP Offset
         self.tcp_offset = torch.tensor([0.0, 0.0, 0.045], device=self.device).repeat([self.scene.num_envs, 1])
-        lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
-        rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
-        self.robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
         
         # Joint Impedance Controller for Torque Control
         self.imp_controller = JointImpedanceController(cfg=self.cfg.imp_controller,
@@ -135,18 +128,7 @@ class FrankaBaseEnv(DirectRLEnv):
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
 
-    # ====================== Oxuilary Functions ================================
-    # def _reset_target_pose(self, env_ids):
-    #     # reset goal rotation
-    #     rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
-    #     new_rot = randomize_rotation(
-    #         rand_floats[:, 0], rand_floats[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
-    #     # update goal pose and markers
-    #     self.goal_rot[env_ids] = new_rot
-    #     goal_loc = self.goal_loc + self.scene.env_origins
-    #     self.goal_markers.visualize(goal_loc, self.goal_rot)
-
-
+    # ====================== Abstract Functions ================================
     @abstractmethod
     def _pre_physics_step(self, actions):
         raise NotImplementedError(f"Please implement the '_pre_physics_step' method for {self.__class__.__name__}.")
@@ -166,18 +148,3 @@ class FrankaBaseEnv(DirectRLEnv):
     @abstractmethod
     def _get_observations(self):
         raise NotImplementedError(f"Please implement the '_get_observation' method for {self.__class__.__name__}.")
-
-
-@torch.jit.script
-def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
-    return quat_mul(
-        quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor)
-    )
-
-@torch.jit.script
-def calculate_robot_tcp(lfinger_pose_w: torch.Tensor, 
-                        rfinger_pose_w: torch.Tensor, 
-                        offset: torch.Tensor) -> torch.Tensor:
-    tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
-
-    return torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)

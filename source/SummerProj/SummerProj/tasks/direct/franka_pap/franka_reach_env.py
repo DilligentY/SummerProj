@@ -51,7 +51,7 @@ class FrankaReachEnv(FrankaBaseEnv):
                             [self.cfg.reset_position_noise_x, self.cfg.reset_position_noise_y],
                             device=self.device,)
         
-        # goal point marker
+        # Goal point marker
         self.target_marker = VisualizationMarkers(self.cfg.goal_pos_marker_cfg)
 
 
@@ -87,7 +87,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         """
             최종 커맨드 [N x 20] 생성 후 Controller API 호출.
         """
-        # ========= Data Setting ==========
+        # ========= Data 세팅 ==========
         robot_root_pos = self._robot.data.root_state_w[:, :7]
         robot_joint_pos = self._robot.data.joint_pos[:, :self.num_active_joints]
         robot_joint_vel = self._robot.data.joint_vel[:, :self.num_active_joints]
@@ -102,48 +102,42 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # ========= Inverse Kinematics =========
         jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
-
-        # ======== Target Joint Angle 계산 ========
+        # Target Joint Angle 계산
         joint_pos_des = self.ik_controller.compute(robot_grasp_loc_b, 
                                                    robot_grasp_rot_b, 
                                                    jacobian, 
                                                    robot_joint_pos)
         
-        # ======== Target Joint Angle을 바탕으로 Impedance Control ======
+
+        # ======== Joint Impedance Regulator ========
         res_joint_pos = joint_pos_des - robot_joint_pos
         self.imp_commands[:, :self.num_active_joints] = res_joint_pos
         self.imp_controller.set_command(self.imp_commands)
-
         des_torque = self.imp_controller.compute(dof_pos=robot_joint_pos,
                                                  dof_vel=robot_joint_vel,
                                                  mass_matrix=gen_mass,
                                                  gravity=gen_grav)
         
-        print(f"Computed Torque : {des_torque}")
-
+        # ===== Target Torque 버퍼에 저장 =====
         self._robot.set_joint_effort_target(des_torque, joint_ids=self.joint_idx)
         
     def _get_dones(self):
         self._compute_intermediate_values()
-        self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-3)
+        self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-2)
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         terminated = self.is_reach
         return terminated, truncated
         
     def _get_rewards(self):
         # Action Penalty
-        # kp_norm = self.actions[:, 7]                   # [-1,1] → Kp 비선형 스케일 전 값
-        # kp_pen      = kp_norm ** 2                     # (env,)
-        gamma = 0.99
         action_norm = torch.norm(self.actions[:, 6:13], dim=1)
-        # Approach Reward(1): Distance Nomarlization
-        # r_pos = 1 - torch.tanh(self.loc_error/0.2)
 
-        # Approach Reward(2): Potential Based Reward Shaping
+        # Approach Reward: Potential Based Reward Shaping
+        gamma = 0.99
         phi_s_prime = -torch.log(6 * self.loc_error + 1)
         phi_s = -torch.log(6 * self.prev_loc_error + 1)
         r_pos = gamma*phi_s_prime - phi_s 
-        # r_pos = 1 - torch.tanh(self.loc_error/0.2)
+
         # Success Reward : Goal Reach
         r_success = self.is_reach.float()
         
@@ -176,7 +170,7 @@ class FrankaReachEnv(FrankaBaseEnv):
                 self.robot_joint_vel[:, 0:self.num_active_joints],
                 # TCP 6D pose w.r.t Root frame (7)
                 self.robot_grasp_pos_b,
-                # object position and rotiation w.r.t TCP Frame (7)
+                # object position w.r.t TCP Frame (7)
                 object_pos_tcp,
             ), dim=1
         )
@@ -187,11 +181,12 @@ class FrankaReachEnv(FrankaBaseEnv):
     def _reset_idx(self, env_ids: torch.Tensor):
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
-        # robot & scene reset
+        # ============ Robot State & Scene 리셋 ===============
         super()._reset_idx(env_ids)
         self.ik_controller.reset(env_ids)
 
-        # object state reset : Location
+        # ============ Target Point 리셋 ===============
+        # object(=target point) reset : Location
         loc_noise_x = sample_uniform(0.4, 0.7, (len(env_ids), 1), device=self.device)
         loc_noise_y = sample_uniform(-0.2, 0.2, (len(env_ids), 1), device=self.device)
         loc_noise_z = sample_uniform(0.1, 0.5, (len(env_ids), 1), device=self.device)
@@ -199,18 +194,18 @@ class FrankaReachEnv(FrankaBaseEnv):
         object_default_state = torch.zeros_like(self._robot.data.default_root_state[env_ids], device=self.device)
         object_default_state[:, :3] += loc_noise + self.scene.env_origins[env_ids, :3]
     
-        # object state reset : Rotation
+        # object(=target point) reset : Rotation
         rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
         object_default_state[:, 3:7] = randomize_rotation(
             rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
         )
 
-        # Convert to Root Frame
+        # Convert from World to Root Frame
         root_pos_w = self._robot.data.default_root_state[env_ids, :7]
         goal_loc_b, goal_rot_b = subtract_frame_transforms(
             root_pos_w[:, :3], root_pos_w[:, 3:7], object_default_state[:, :3], object_default_state[:, 3:7])
 
-        # Goalpoint Pose
+        # Setting Target point 6D pose
         self.goal_pos_w[env_ids] = object_default_state[:, :7]
         self.goal_pos_b[env_ids] = torch.cat([goal_loc_b, goal_rot_b], dim=-1)
         
@@ -222,86 +217,37 @@ class FrankaReachEnv(FrankaBaseEnv):
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
 
+        # ========= TCP 업데이트 ===========
         root_pos_w = self._robot.data.root_state_w[env_ids, :7]
         lfinger_pos_w = self._robot.data.body_state_w[env_ids, self.left_finger_link_idx, :7]
         rfinger_pos_w = self._robot.data.body_state_w[env_ids, self.right_finger_link_idx, :7]
-        
         # data for joint
         self.robot_joint_pos[env_ids] = self._robot.data.joint_pos[env_ids]
         self.robot_joint_vel[env_ids] = self._robot.data.joint_vel[env_ids]
-
         # data for TCP (world & root Frame)
         self.robot_grasp_pos_w[env_ids] = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset[env_ids])
         robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
             root_pos_w[:, :3], root_pos_w[:, 3:7], self.robot_grasp_pos_w[env_ids, :3], self.robot_grasp_pos_w[env_ids, 3:7])
         self.robot_grasp_pos_b[env_ids] = torch.cat((robot_grasp_loc_b, robot_grasp_rot_b), dim=1)
 
-        # Distance
+        # ========= Position Error 업데이트 =========
+        # Location
         self.prev_loc_error[env_ids] = self.loc_error[env_ids]
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - self.goal_pos_b[env_ids, :3], dim=1)
+        # Rotation
         self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], self.goal_pos_b[env_ids, 3:7])
-        # Visualization
+        
+        # ======== Visualization ==========
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
         self.target_marker.visualize(self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
         
-    
-    def _compute_grasp_transforms(
-        self,
-        root_pos: torch.Tensor,
-        object_global_grasp_rot: torch.Tensor,
-        object_global_grasp_loc: torch.Tensor,
-    ):
-
-        # Object Grasp Pose -> K개
-        num_keypoints = object_global_grasp_loc.shape[1]
-        root_pos_exp = root_pos[:, None, :].expand(-1, num_keypoints, -1)
-
-        local_object_loc, local_object_rot = subtract_frame_transforms(
-            root_pos_exp[:, :, :3], root_pos_exp[:, :, 3:7], object_global_grasp_loc, object_global_grasp_rot
-        )
-        
-        return torch.cat((local_object_loc, local_object_rot), dim=-1)
-
-
-
 
 @torch.jit.script
 def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
     return quat_mul(
         quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor)
     )
-
-
-@torch.jit.script
-def compute_keypoints(
-    pose: torch.Tensor,
-    num_keypoints: int = 8,
-    size: tuple[float, float, float] = (2 * 0.03, 2 * 0.03, 2 * 0.03),
-    out: torch.Tensor | None = None,
-):
-    """Computes positions of 8 corner keypoints of a cube.
-
-    Args:
-        pose: Position and orientation of the center of the cube. Shape is (N, 7)
-        num_keypoints: Number of keypoints to compute. Default = 8
-        size: Length of X, Y, Z dimensions of cube. Default = [0.06, 0.06, 0.06]
-        out: Buffer to store keypoints. If None, a new buffer will be created.
-    """
-    num_envs = pose.shape[0]
-    if out is None:
-        out = torch.ones(num_envs, num_keypoints, 3, dtype=torch.float32, device=pose.device)
-    else:
-        out[:] = 1.0
-    for i in range(num_keypoints):
-        # which dimensions to negate
-        n = [((i >> k) & 1) == 0 for k in range(3)]
-        corner_loc = ([(1 if n[k] else -1) * s / 2 for k, s in enumerate(size)],)
-        corner = torch.tensor(corner_loc, dtype=torch.float32, device=pose.device) * out[:, i, :]
-        # express corner position in the world frame
-        out[:, i, :] = pose[:, :3] + quat_apply(pose[:, 3:7], corner)
-
-    return out
 
 @torch.jit.script
 def calculate_robot_tcp(lfinger_pose_w: torch.Tensor, 
@@ -310,11 +256,3 @@ def calculate_robot_tcp(lfinger_pose_w: torch.Tensor,
     tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
 
     return torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)
-
-@torch.jit.script
-def row_pass_filter(target_residual: torch.Tensor,
-                    prev_residual: torch.Tensor,
-                    time_step: float,
-                    omega: torch.Tensor) -> torch.Tensor:
-    
-    return 1 / (1+omega * time_step) * (prev_residual + omega * time_step * target_residual)
