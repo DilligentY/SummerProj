@@ -26,7 +26,6 @@ def create_ppo_agent(env: DirectRLEnv,
         observation_space=env.observation_space,
         action_space=env.action_space,
         device=env.device,
-        encoder=policy.encoder
     )
     models = {"policy": policy, "value": value}
     

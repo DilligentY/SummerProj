@@ -85,7 +85,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
         self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 13:]
 
-        # print(f"kp = {self.processed_actions[0, 6:13]}")
+        print(f"kp = {self.processed_actions[0, 6:13]}")
         # print(f"damping= {self.processed_actions[0, 13:]}")
         
 

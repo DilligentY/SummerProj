@@ -67,7 +67,8 @@ import torch
 
 import skrl
 from packaging import version
-from ....SummerProj.source.SummerProj.SummerProj.tasks.direct.franka_pap.agents.runners_factory import create_ppo_agent
+
+from SummerProj.tasks.direct.franka_pap.agents.runners_factory import create_ppo_agent
 
 # check for minimum supported skrl version
 SKRL_VERSION = "1.4.2"
@@ -164,7 +165,7 @@ def main():
     experiment_cfg["trainer"]["close_environment_at_exit"] = False
     experiment_cfg["agent"]["experiment"]["write_interval"] = 0  # don't log to TensorBoard
     experiment_cfg["agent"]["experiment"]["checkpoint_interval"] = 0  # don't generate checkpoints
-    _, agent = create_ppo_agent(env, agent_cfg=experiment_cfg)
+    agent = create_ppo_agent(env, agent_cfg=experiment_cfg)
     # runner = Runner(env, experiment_cfg)
 
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
