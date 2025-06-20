@@ -252,9 +252,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         ppo_cfg["value_preprocessor"] = RunningStandardScaler
         ppo_cfg["value_preprocessor_kwargs"] = {"size": 1, "device": env.device}
     print(f"[INFO] Set preprocessor sizes: state={env.observation_space.shape}, value=1")
-
-    # 3.3. Runner가 사용할 설정은 미리 제거
-    ppo_cfg.pop("experiment", None)
     
     # 4. 이제 모든 내용이 올바르게 변환된 cfg를 사용하여 PPO 에이전트를 직접 생성합니다.
     agent = PPO(models=models,
@@ -263,7 +260,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 observation_space=env.observation_space,
                 action_space=env.action_space,
                 device=env.device)
-    
 
     # 5. Trainer를 직접 생성합니다.
     #    cfg에는 agent_cfg의 'trainer' 하위 딕셔너리를 전달합니다.
