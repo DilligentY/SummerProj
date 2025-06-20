@@ -159,7 +159,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # IK에서 지정한 Command값을 얼마나 잘 추종했는가? 에 대한 보상도 함께 있으면 좋아보인다.. 우선 보류
         reward = self.cfg.w_pos * r_pos + self.cfg.w_rot * r_rot - self.cfg.w_penalty * action_norm + r_success
 
-        print(f"reward of env1 : {reward[0]}")
+        # print(f"reward of env1 : {reward[0]}")
 
         return reward
     
