@@ -64,7 +64,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         6:13     →  Joint-stiffness for Impedance Control   (N·m/rad)
         13:20    →  Damping-ratio for Impedance Control     (-)
         """
-        self.actions = actions.clone().clamp(-1.0, 1.0)
+        self.actions = actions.clone()
         # ── 슬라이스 & 즉시 in-place clip ──────────────────────────
         self.processed_actions[:, :3] = self.actions[:, :3] * self.cfg.loc_res_scale
         self.processed_actions[:, 3:6] = self.actions[:, 3:6] * self.cfg.rot_res_scale
@@ -85,8 +85,8 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
         self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 13:]
 
-        print(f"kp = {self.processed_actions[0, 6:13]}")
-        print(f"damping= {self.processed_actions[0, 13:]}")
+        # print(f"kp = {self.processed_actions[0, 6:13]}")
+        # print(f"damping= {self.processed_actions[0, 13:]}")
         
 
     def _apply_action(self) -> None:

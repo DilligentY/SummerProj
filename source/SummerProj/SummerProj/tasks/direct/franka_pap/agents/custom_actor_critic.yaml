@@ -1,0 +1,14 @@
+# 이 파일은 FrankaCustomActorCritic 클래스의 인스턴스를
+# 어떻게 생성할지를 Hydra에게 알려주는 역할을 합니다.
+
+defaults:
+  - _self_
+
+# _target_ 키: Hydra가 인스턴스화할 Python 클래스의 전체 경로
+# 경로의 시작점은 보통 'source' 폴더입니다. 위에서 만든 파일 경로에 맞춰주세요.
+_target_: SummerProj.SummerProj.tasks.direct.franka_pap.agents.custom_net.FrankaCustomActorCritic
+
+# __init__ 메소드에 전달될 파라미터들
+encoder_features: [256, 128]
+policy_features: [64]
+value_features: [64]
