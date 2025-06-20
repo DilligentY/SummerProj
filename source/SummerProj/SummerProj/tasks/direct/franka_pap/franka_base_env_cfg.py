@@ -83,7 +83,7 @@ from isaaclab.controllers.joint_impedance import JointImpedanceControllerCfg
 @configclass
 class FrankaBaseEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 10.0
+    episode_length_s: int
     decimation: int
     action_space: int
     observation_space: int
@@ -168,8 +168,8 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
         impedance_mode="variable",
         stiffness=300.0,
         damping_ratio=0.5,
-        stiffness_limits=(50, 500),
-        damping_ratio_limits=(0, 3),
+        stiffness_limits=(100, 300),
+        damping_ratio_limits=(0, 1),
         inertial_compensation=True,
         gravity_compensation=True,)
     
@@ -184,7 +184,7 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
     # Joint Control Action scale
-    loc_res_scale = 0.2
+    loc_res_scale = 0.1
     rot_res_scale = 0.1
     joint_res_clipping = 0.2
     stiffness_scale = imp_controller.stiffness_limits[1]
