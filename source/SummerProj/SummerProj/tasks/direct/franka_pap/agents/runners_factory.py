@@ -12,6 +12,47 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
+def create_ppo_agent(env: DirectRLEnv,
+                     agent_cfg: Dict) -> PPO:
+    print("[AgentFactory] Creating a custom PPO agent for Franka...")
+
+    # 1. 커스텀 모델 분리 생성
+    policy = FrankaGaussianPolicy(
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device
+    )
+    value = FrankaValue(
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device,
+        encoder=policy.encoder
+    )
+    models = {"policy": policy, "value": value}
+    
+    # 2. 메모리 생성
+    memory_size = agent_cfg.get("agent", {}).get("rollouts")
+    memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=env.device)
+
+    # 3. PPO 설정을 위한 딕셔너리 전처리
+    ppo_cfg = agent_cfg.get("agent", {})
+    if ppo_cfg.get("state_preprocessor_kwargs", None) is None: ppo_cfg["state_preprocessor_kwargs"] = {}
+    ppo_cfg["state_preprocessor_kwargs"]["size"] = env.observation_space
+    if ppo_cfg.get("value_preprocessor_kwargs", None) is None: ppo_cfg["value_preprocessor_kwargs"] = {}
+    ppo_cfg["value_preprocessor_kwargs"]["size"] = 1
+    if ppo_cfg.get("learning_rate_scheduler") == "KLAdaptiveLR": ppo_cfg["learning_rate_scheduler"] = KLAdaptiveLR
+    if ppo_cfg.get("state_preprocessor") == "RunningStandardScaler": ppo_cfg["state_preprocessor"] = RunningStandardScaler
+    if ppo_cfg.get("value_preprocessor") == "RunningStandardScaler": ppo_cfg["value_preprocessor"] = RunningStandardScaler
+    ppo_cfg.pop("experiment", None)
+    
+    # 4. PPO 에이전트 생성
+    agent = PPO(models=models, memory=memory, cfg=ppo_cfg, 
+                observation_space=env.observation_space, action_space=env.action_space, device=env.device)
+    
+    return agent
+
+
+
 def create_ppo_runner(env: DirectRLEnv, 
                       memory: Dict,
                       agent: Dict, 

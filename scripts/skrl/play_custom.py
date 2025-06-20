@@ -67,6 +67,7 @@ import torch
 
 import skrl
 from packaging import version
+from ....SummerProj.source.SummerProj.SummerProj.tasks.direct.franka_pap.agents.runners_factory import create_ppo_agent
 
 # check for minimum supported skrl version
 SKRL_VERSION = "1.4.2"
@@ -163,12 +164,15 @@ def main():
     experiment_cfg["trainer"]["close_environment_at_exit"] = False
     experiment_cfg["agent"]["experiment"]["write_interval"] = 0  # don't log to TensorBoard
     experiment_cfg["agent"]["experiment"]["checkpoint_interval"] = 0  # don't generate checkpoints
-    runner = Runner(env, experiment_cfg)
+    _, agent = create_ppo_agent(env, agent_cfg=experiment_cfg)
+    # runner = Runner(env, experiment_cfg)
 
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
-    runner.agent.load(resume_path)
-    # set agent to evaluation mode
-    runner.agent.set_running_mode("eval")
+    agent.load(resume_path)
+    agent.set_running_mode("eval")
+    # runner.agent.load(resume_path)
+    # # set agent to evaluation mode
+    # runner.agent.set_running_mode("eval")
 
     # reset environment
     obs, _ = env.reset()
@@ -180,7 +184,7 @@ def main():
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            outputs = runner.agent.act(obs, timestep=0, timesteps=0)
+            outputs = agent.act(obs, timestep=0, timesteps=0)
             # - multi-agent (deterministic) actions
             if hasattr(env, "possible_agents"):
                 actions = {a: outputs[-1][a].get("mean_actions", outputs[0][a]) for a in env.possible_agents}
