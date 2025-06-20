@@ -1,43 +1,13 @@
-_target_: SummerProj.tasks.direct.franka_pap.agents.runners_factory.create_franka_ppo_runner
+_target_: SummerProj.tasks.direct.franka_pap.agents.runners_factory.create_ppo_runner
 
+# Seed for random process
 seed: 42
-
-# Models are instantiated using skrl's model instantiator utility
-# https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
-models:
-  separate: False # for Multi Agent RL
-  policy:  # see gaussian_model parameters
-    class: GaussianMixin
-    clip_actions: False
-    clip_log_std: True
-    min_log_std: -20.0
-    max_log_std: 2.0
-    initial_log_std: 0.0
-    
-    network:
-      - name: net
-        input: STATES
-        layers: [256, 256]
-        activations: elu
-    output: ACTIONS
-
-  value:  # see deterministic_model parameters
-    class: DeterministicMixin
-    clip_actions: False
-    network:
-      - name: net
-        input: STATES
-        layers: [256, 256]
-        activations: elu
-    output: ONE
-
 
 # Rollout memory
 # https://skrl.readthedocs.io/en/latest/api/memories/random.html
 memory:
   class: RandomMemory
   memory_size: -1  # automatically determined (same as agent:rollouts)
-
 
 # PPO agent configuration (field names are from PPO_DEFAULT_CONFIG)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html

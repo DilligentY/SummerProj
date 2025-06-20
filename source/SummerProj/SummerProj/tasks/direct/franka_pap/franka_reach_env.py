@@ -203,8 +203,8 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # ============ Target Point 리셋 ===============
         # object(=target point) reset : Location
-        loc_noise_x = sample_uniform(0.4, 0.7, (len(env_ids), 1), device=self.device)
-        loc_noise_y = sample_uniform(-0.2, 0.2, (len(env_ids), 1), device=self.device)
+        loc_noise_x = sample_uniform(0.5, 0.8, (len(env_ids), 1), device=self.device)
+        loc_noise_y = sample_uniform(-0.3, 0.3, (len(env_ids), 1), device=self.device)
         loc_noise_z = sample_uniform(0.1, 0.5, (len(env_ids), 1), device=self.device)
         loc_noise = torch.cat([loc_noise_x, loc_noise_y, loc_noise_z], dim=-1)
         object_default_state = torch.zeros_like(self._robot.data.default_root_state[env_ids], device=self.device)
