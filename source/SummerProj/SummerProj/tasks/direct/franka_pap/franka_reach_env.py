@@ -153,7 +153,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # r_rot = gamma*phi_s_prime_rot - phi_s_rot
 
         # ========== Approach Reward (2): Distance Reward Shaping ===========
-        r_pos = 1 - torch.tanh(self.loc_error/0.5)
+        r_pos = 1 - torch.tanh(self.loc_error/3.0)
         r_rot = 1 - torch.tanh(self.rot_error/0.5)
 
         # print(f"pos_error : {self.loc_error[0]}")
