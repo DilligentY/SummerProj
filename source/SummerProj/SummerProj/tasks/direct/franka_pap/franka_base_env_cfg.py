@@ -184,7 +184,7 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
         "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
     # Joint Control Action scale
-    loc_res_scale = 0.1
+    loc_res_scale = 0.2 
     rot_res_scale = 0.1
     joint_res_clipping = 0.2
     stiffness_scale = imp_controller.stiffness_limits[1]

@@ -142,12 +142,12 @@ class FrankaReachEnv(FrankaBaseEnv):
         action_norm = torch.norm(self.actions[:, 6:13], dim=1)
 
         # =========== Approach Reward (1): Potential Based Reward Shaping =============
-        gamma = 0.99
-        phi_s_prime = torch.exp(0.3 * self.loc_error)
-        phi_s = torch.exp(0.3 * self.prev_loc_error)
+        gamma = 1.0
+        phi_s_prime = self.loc_error
+        phi_s = self.prev_loc_error
 
-        phi_s_prime_rot = torch.exp(0.2 * self.rot_error)
-        phi_s_rot = torch.exp(0.2 * self.prev_rot_error)
+        phi_s_prime_rot = self.rot_error
+        phi_s_rot = self.prev_rot_error
 
         r_pos = gamma*phi_s_prime - phi_s 
         r_rot = gamma*phi_s_prime_rot - phi_s_rot

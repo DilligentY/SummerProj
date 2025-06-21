@@ -23,7 +23,7 @@ class FrankaGaussianPolicy(GaussianMixin, Model):
         encoder_layers = []
         for out_features in encoder_features:
             encoder_layers.append(nn.Linear(in_features, out_features))
-            encoder_layers.append(nn.ELU())
+            encoder_layers.append(nn.ReLU())
             in_features = out_features
         self.encoder = nn.Sequential(*encoder_layers)
 
@@ -32,7 +32,7 @@ class FrankaGaussianPolicy(GaussianMixin, Model):
         in_features_policy = in_features
         for out_features in policy_features:
             policy_layers.append(nn.Linear(in_features_policy, out_features))
-            policy_layers.append(nn.ELU())
+            policy_layers.append(nn.ReLU())
             in_features_policy = out_features
         self.policy_branch = nn.Sequential(*policy_layers)
         
@@ -69,7 +69,7 @@ class FrankaValue(DeterministicMixin, Model):
         encoder_layers = []
         for out_features in encoder_features:
             encoder_layers.append(nn.Linear(in_features_encoder, out_features))
-            encoder_layers.append(nn.ELU())
+            encoder_layers.append(nn.ReLU())
             in_features_encoder = out_features
         self.encoder = nn.Sequential(*encoder_layers)
 
@@ -78,7 +78,7 @@ class FrankaValue(DeterministicMixin, Model):
         value_layers = []
         for out_features in value_features:
             value_layers.append(nn.Linear(in_features_value, out_features))
-            value_layers.append(nn.ELU())
+            value_layers.append(nn.ReLU())
             in_features_value = out_features
         self.value_branch = nn.Sequential(*value_layers)
         self.value_head = nn.Linear(in_features_value, 1)
