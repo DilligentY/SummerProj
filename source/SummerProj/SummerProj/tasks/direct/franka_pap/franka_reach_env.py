@@ -143,11 +143,11 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # =========== Approach Reward (1): Potential Based Reward Shaping =============
         gamma = 1.0
-        phi_s_prime = self.loc_error
-        phi_s = self.prev_loc_error
+        phi_s_prime = -self.loc_error
+        phi_s = -self.prev_loc_error
 
-        phi_s_prime_rot = self.rot_error
-        phi_s_rot = self.prev_rot_error
+        phi_s_prime_rot = -self.rot_error
+        phi_s_rot = -self.prev_rot_error
 
         r_pos = gamma*phi_s_prime - phi_s 
         r_rot = gamma*phi_s_prime_rot - phi_s_rot
@@ -158,6 +158,7 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # print(f"pos_error : {self.loc_error[0]}")
         # print(f"pos_reward : {r_pos[0]}")
+        # print(f"rot_reward : {r_rot[0]}")
 
 
         # =========== Success Reward : Goal Reach ============
