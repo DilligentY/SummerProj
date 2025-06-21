@@ -153,8 +153,11 @@ class FrankaReachEnv(FrankaBaseEnv):
         # r_rot = gamma*phi_s_prime_rot - phi_s_rot
 
         # ========== Approach Reward (2): Distance Reward Shaping ===========
-        r_pos = 1 - torch.tanh(self.loc_error/0.2)
-        r_rot = 1 - torch.tanh(self.rot_error/0.2)
+        r_pos = 1 - torch.tanh(self.loc_error/0.5)
+        r_rot = 1 - torch.tanh(self.rot_error/0.5)
+
+        # print(f"pos_error : {self.loc_error[0]}")
+        # print(f"pos_reward : {r_pos[0]}")
 
 
         # =========== Success Reward : Goal Reach ============
@@ -165,6 +168,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         reward = self.cfg.w_pos * r_pos + self.cfg.w_rot * r_rot - self.cfg.w_penalty * action_norm + r_success
 
         # print(f"reward of env1 : {reward[0]}")
+        # print(f"--------------------------------------")
 
         return reward
     
@@ -256,6 +260,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.prev_loc_error[env_ids] = self.loc_error[env_ids]
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - self.goal_pos_b[env_ids, :3], dim=1)
+        # print(f"Distnace : {self.loc_error[0]}")
         # Rotation
         self.prev_rot_error[env_ids] = self.rot_error[env_ids]
         self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], self.goal_pos_b[env_ids, 3:7])

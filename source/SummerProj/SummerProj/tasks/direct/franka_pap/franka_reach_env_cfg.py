@@ -52,6 +52,6 @@ class FrankaReachEnvCfg(FrankaBaseEnvCfg):
 
     # reward hyperparameter
     alpha, beta = 10.0, 4.0
-    w_pos = 20.0
-    w_rot = 15.0
+    w_pos = 25.0
+    w_rot = 3.0
     w_penalty = 0.001
