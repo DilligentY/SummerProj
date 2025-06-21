@@ -18,8 +18,8 @@ from .franka_base_env_cfg import FrankaBaseEnvCfg
 class FrankaReachEnvCfg(FrankaBaseEnvCfg):
     # env
     episode_length_s = 10.0
-    decimation = 10
-    action_space = 20
+    decimation = 2
+    action_space = 21
     observation_space = 28
     state_space = 0
 

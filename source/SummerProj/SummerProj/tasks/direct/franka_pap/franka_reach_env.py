@@ -60,69 +60,43 @@ class FrankaReachEnv(FrankaBaseEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
-        actions.shape  =  (N, 20)
-        0:6      →  Delta EE 6D Pose for IK                       (m, -)
-        6:13     →  Joint-stiffness for Impedance Control   (N·m/rad)
-        13:20    →  Damping-ratio for Impedance Control     (-)
+        actions.shape  =  (N, 21)
+        0:6      →  Delta Joint Angle                       (rad)
+        7:14     →  Joint-stiffness for Impedance Control   (N·m/rad)
+        15:21    →  Damping-ratio for Impedance Control     (-)
         """
         self.actions = actions.clone()
         # ── 슬라이스 & 즉시 in-place clip ──────────────────────────
-        self.processed_actions[:, :3] = self.actions[:, :3] * self.cfg.loc_res_scale
-        self.processed_actions[:, 3:6] = self.actions[:, 3:6] * self.cfg.rot_res_scale
-        self.processed_actions[:, 6:13] = torch.clamp(self.actions[:, 6:13] * self.cfg.stiffness_scale,
+        self.processed_actions[:, :7]   = torch.clamp(self.actions[:, :7] * self.cfg.joint_res_clipping,
+                                                      self.robot_dof_res_lower_limits,
+                                                      self.robot_dof_res_upper_limits)
+        self.processed_actions[:, 7:14] = torch.clamp(self.actions[:, 7:14] * self.cfg.stiffness_scale,
                                                       self.robot_dof_stiffness_lower_limits,
                                                       self.robot_dof_stiffness_upper_limits)
-        self.processed_actions[:, 13:] = torch.clamp(self.actions[:, 13:] * self.cfg.damping_scale,
+        self.processed_actions[:, 14:]  = torch.clamp(self.actions[:, 14:] * self.cfg.damping_scale,
                                                      self.robot_dof_damping_lower_limits,
                                                      self.robot_dof_damping_upper_limits) 
         
-        # ===== IK Command 세팅 for absolute control =====
-        target_loc_b = self.robot_grasp_pos_b[:, :3] + self.processed_actions[:, :3]
-        target_rot_b = compute_delta_rot(self.robot_grasp_pos_b[:, 3:7], self.processed_actions[:, 3:6])
-        abs_target_pos_b = torch.cat([target_loc_b, target_rot_b], dim=-1)
-
-        self.ik_controller.set_command(abs_target_pos_b,
-                                       self.robot_grasp_pos_b[:, :3],
-                                       self.robot_grasp_pos_b[:, 3:7])
-        
         # ===== Impedance Controller Gain 세팅 =====
-        self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
-        self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 13:]
+        self.imp_commands[:,  :self.num_active_joints] += self.robot_joint_pos[:, :self.num_active_joints]
+        self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 7:14]
+        self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 14:]
+        self.imp_controller.set_command(self.imp_commands)
         
 
     def _apply_action(self) -> None:
         """
-            최종 커맨드 [N x 20] 생성 후 Controller API 호출.
+            최종 커맨드 [N x 21] 생성 후 Controller API 호출.
         """
         # ========= Data 세팅 ==========
-        robot_root_pos = self._robot.data.root_state_w[:, :7]
         robot_joint_pos = self._robot.data.joint_pos[:, :self.num_active_joints]
         robot_joint_vel = self._robot.data.joint_vel[:, :self.num_active_joints]
-        lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
-        rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
-        robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
-        robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
-            robot_root_pos[:, :3], robot_root_pos[:, 3:7], robot_grasp_pos_w[:, :3], robot_grasp_pos_w[:, 3:7])
 
         gen_mass = self._robot.root_physx_view.get_generalized_mass_matrices()[:, :self.num_active_joints, :self.num_active_joints]
         gen_grav = self._robot.root_physx_view.get_gravity_compensation_forces()[:, :self.num_active_joints]
 
-        # ========= Inverse Kinematics =========
-        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
-        # Target Joint Angle 계산
-        joint_pos_des = self.ik_controller.compute(robot_grasp_loc_b, 
-                                                   robot_grasp_rot_b, 
-                                                   jacobian, 
-                                                   robot_joint_pos)
     
         # ======== Joint Impedance Regulator ========
-        # Joint Clipping for stable Learning (To Do: Residual Curriculum Learning)
-        res_joint_pos = saturate(joint_pos_des - robot_joint_pos,
-                                 self.robot_dof_res_lower_limits, 
-                                 self.robot_dof_res_upper_limits)
-        
-        self.imp_commands[:, :self.num_active_joints] = res_joint_pos
-        self.imp_controller.set_command(self.imp_commands)
         des_torque = self.imp_controller.compute(dof_pos=robot_joint_pos,
                                                  dof_vel=robot_joint_vel,
                                                  mass_matrix=gen_mass,

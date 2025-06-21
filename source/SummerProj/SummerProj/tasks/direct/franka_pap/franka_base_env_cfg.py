@@ -164,7 +164,7 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
     
     # Joint Impedance controller
     imp_controller: JointImpedanceControllerCfg = JointImpedanceControllerCfg(
-        command_type="p_rel",
+        command_type="p_abs",
         impedance_mode="variable",
         stiffness=300.0,
         damping_ratio=0.5,
