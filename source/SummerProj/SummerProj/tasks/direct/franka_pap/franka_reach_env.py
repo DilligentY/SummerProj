@@ -143,11 +143,11 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # =========== Approach Reward: Potential Based Reward Shaping =============
         gamma = 0.99
-        phi_s_prime = -torch.log(20 * self.loc_error + 1)
-        phi_s = -torch.log(20 * self.prev_loc_error + 1)
+        phi_s_prime = -torch.log(3 * self.loc_error + 1)
+        phi_s = -torch.log(3 * self.prev_loc_error + 1)
 
-        phi_s_prime_rot = -torch.log(20 * self.rot_error + 1)
-        phi_s_rot = -torch.log(20 * self.prev_rot_error + 1)
+        phi_s_prime_rot = -torch.log(3 * self.rot_error + 1)
+        phi_s_rot = -torch.log(3 * self.prev_rot_error + 1)
 
         r_pos = gamma*phi_s_prime - phi_s 
         r_rot = gamma*phi_s_prime_rot - phi_s_rot
