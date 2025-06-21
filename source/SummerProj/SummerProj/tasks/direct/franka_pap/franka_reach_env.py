@@ -78,7 +78,7 @@ class FrankaReachEnv(FrankaBaseEnv):
                                                      self.robot_dof_damping_upper_limits) 
         
         # ===== Impedance Controller Gain 세팅 =====
-        self.imp_commands[:,  :self.num_active_joints] += self.robot_joint_pos[:, :self.num_active_joints]
+        self.imp_commands[:,  :self.num_active_joints] = self.processed_actions[:, :7] + self.robot_joint_pos[:, :self.num_active_joints]
         self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 7:14]
         self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 14:]
         self.imp_controller.set_command(self.imp_commands)
