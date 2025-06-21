@@ -181,11 +181,11 @@ class FrankaReachEnv(FrankaBaseEnv):
             - 1.0
         )
 
-        object_loc_tcp, object_rot_tcp = subtract_frame_transforms(
-            self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7], self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7]
-        )
+        # object_loc_tcp, object_rot_tcp = subtract_frame_transforms(
+        #     self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7], self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7]
+        # )
 
-        object_pos_tcp = torch.cat([object_loc_tcp, object_rot_tcp], dim=1)
+        # object_pos_tcp = torch.cat([object_loc_tcp, object_rot_tcp], dim=1)
 
         obs = torch.cat(
             (   
@@ -195,8 +195,8 @@ class FrankaReachEnv(FrankaBaseEnv):
                 self.robot_joint_vel[:, 0:self.num_active_joints],
                 # TCP 6D pose w.r.t Root frame (7)
                 self.robot_grasp_pos_b,
-                # object position w.r.t TCP Frame (7)
-                object_pos_tcp,
+                # object position w.r.t Root frame (7)
+                self.goal_pos_b,
             ), dim=1
         )
 
