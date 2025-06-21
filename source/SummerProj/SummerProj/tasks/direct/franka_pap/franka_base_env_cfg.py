@@ -176,7 +176,7 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
     # IK controller
     ik_controller = DifferentialIKControllerCfg = DifferentialIKControllerCfg(
         command_type='pose',
-        use_relative_mode=True,
+        use_relative_mode=False,
         ik_method='dls',)
     
     # Scene entities

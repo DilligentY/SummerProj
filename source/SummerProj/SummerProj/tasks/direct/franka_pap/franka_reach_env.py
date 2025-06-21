@@ -56,6 +56,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.target_marker = VisualizationMarkers(self.cfg.goal_pos_marker_cfg)
         self.via_marker = VisualizationMarkers(self.cfg.via_pos_marker_cfg)
 
+    # ================= IK + Controller Gain =================
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
@@ -75,18 +76,18 @@ class FrankaReachEnv(FrankaBaseEnv):
                                                      self.robot_dof_damping_lower_limits,
                                                      self.robot_dof_damping_upper_limits) 
         
-        # ===== IK Command 세팅 =====
-        # print(f"delta_pose = {self.processed_actions[0, :6]}")
-        self.ik_controller.set_command(self.processed_actions[:, :6],
+        # ===== IK Command 세팅 for absolute control =====
+        target_loc_b = self.robot_grasp_pos_b[:, :3] + self.processed_actions[:, :3]
+        target_rot_b = compute_delta_rot(self.robot_grasp_pos_b[:, 3:7], self.processed_actions[:, 3:6])
+        abs_target_pos_b = torch.cat([target_loc_b, target_rot_b], dim=-1)
+
+        self.ik_controller.set_command(abs_target_pos_b,
                                        self.robot_grasp_pos_b[:, :3],
                                        self.robot_grasp_pos_b[:, 3:7])
         
         # ===== Impedance Controller Gain 세팅 =====
         self.imp_commands[:,   self.num_active_joints : 2*self.num_active_joints] = self.processed_actions[:, 6:13]
         self.imp_commands[:, 2*self.num_active_joints : 3*self.num_active_joints] = self.processed_actions[:, 13:]
-
-        # print(f"kp = {self.processed_actions[0, 6:13]}")
-        # print(f"damping= {self.processed_actions[0, 13:]}")
         
 
     def _apply_action(self) -> None:
@@ -115,7 +116,7 @@ class FrankaReachEnv(FrankaBaseEnv):
                                                    robot_joint_pos)
     
         # ======== Joint Impedance Regulator ========
-        # 안정적 학습을 위한 Joint Cliiping (이후, Residual Curriculum으로 확장 예정)
+        # Joint Clipping for stable Learning (To Do: Residual Curriculum Learning)
         res_joint_pos = saturate(joint_pos_des - robot_joint_pos,
                                  self.robot_dof_res_lower_limits, 
                                  self.robot_dof_res_upper_limits)
@@ -130,6 +131,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # ===== Target Torque 버퍼에 저장 =====
         self._robot.set_joint_effort_target(des_torque, joint_ids=self.joint_idx)
         
+
     def _get_dones(self):
         self._compute_intermediate_values()
         self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-2)
@@ -152,6 +154,17 @@ class FrankaReachEnv(FrankaBaseEnv):
         r_pos = gamma*phi_s_prime - phi_s 
         r_rot = gamma*phi_s_prime_rot - phi_s_rot
 
+        # =========== Approach Reward (1-1): Potential Based Reward Shaping by log scale =============
+        gamma = 1.0
+        phi_s_prime = -torch.log(3 * self.loc_error + 1)
+        phi_s = -torch.log(3 * self.prev_loc_error + 1)
+
+        phi_s_prime_rot = -torch.log(3 * self.rot_error + 1)
+        phi_s_rot = -torch.log(3 * self.prev_rot_error + 1)
+
+        r_pos = gamma*phi_s_prime - phi_s 
+        r_rot = gamma*phi_s_prime_rot - phi_s_rot
+
         # ========== Approach Reward (2): Distance Reward Shaping ===========
         # r_pos = 1 - torch.tanh(self.loc_error/3.0)
         # r_rot = 1 - torch.tanh(self.rot_error/0.5)
@@ -165,7 +178,6 @@ class FrankaReachEnv(FrankaBaseEnv):
         r_success = self.is_reach.float()
         
         # =========== Summation =============
-        # IK에서 지정한 Command값을 얼마나 잘 추종했는가? 에 대한 보상도 함께 있으면 좋아보인다.. 우선 보류
         reward = self.cfg.w_pos * r_pos + self.cfg.w_rot * r_rot - self.cfg.w_penalty * action_norm + r_success
 
         # print(f"reward of env1 : {reward[0]}")
@@ -181,12 +193,6 @@ class FrankaReachEnv(FrankaBaseEnv):
             / (self.robot_dof_upper_limits - self.robot_dof_lower_limits)
             - 1.0
         )
-
-        # object_loc_tcp, object_rot_tcp = subtract_frame_transforms(
-        #     self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7], self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7]
-        # )
-
-        # object_pos_tcp = torch.cat([object_loc_tcp, object_rot_tcp], dim=1)
 
         obs = torch.cat(
             (   
@@ -269,7 +275,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # ======== Visualization ==========
         self.via_marker.visualize(self.processed_actions[:, :3] + self.robot_grasp_pos_w[:, :3])
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
-        self.target_marker.visualize(self.goal_pos_b[:, :3] + root_pos_w[:, :3], self.goal_pos_w[:, 3:7])
+        self.target_marker.visualize(self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
         
 
 @torch.jit.script
@@ -285,3 +291,19 @@ def calculate_robot_tcp(lfinger_pose_w: torch.Tensor,
     tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
 
     return torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)
+
+@torch.jit.script
+def compute_delta_rot(base_angle: torch.Tensor, delta_angle: torch.Tensor) -> torch.Tensor:
+        """
+            Compute Delta Rotation :
+                base_angle: (N, 4) quaternion form
+                target_angle : (N, 3) euler angle form
+            
+                -> we calculate target_delta_rotation by quaternion form
+        """
+        delta_rot_axis = delta_angle
+        delta_rot_angle = torch.norm(delta_rot_axis, dim=-1)
+        delta_rot_axis_normalized = delta_rot_axis / (delta_rot_angle.unsqueeze(-1) + 1e-6)
+        delta_rot = quat_from_angle_axis(delta_rot_angle, delta_rot_axis_normalized)
+        target_delta_rot_b = quat_mul(delta_rot, base_angle)
+        return target_delta_rot_b

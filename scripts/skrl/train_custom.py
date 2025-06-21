@@ -183,9 +183,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for skrl
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)  # same as: `wrap_env(env, wrapper="auto")`
 
-
     # ============= Custom Agent & Trainer 생성 ===============
-
     print("[INFO] Instantiating trainer and agent via custom factory...")
     trainer, agent = hydra.utils.instantiate(agent_cfg, env=env)
 
