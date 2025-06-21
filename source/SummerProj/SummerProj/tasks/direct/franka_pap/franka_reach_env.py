@@ -142,19 +142,19 @@ class FrankaReachEnv(FrankaBaseEnv):
         action_norm = torch.norm(self.actions[:, 6:13], dim=1)
 
         # =========== Approach Reward (1): Potential Based Reward Shaping =============
-        # gamma = 0.99
-        # phi_s_prime = -torch.log(3 * self.loc_error + 1)
-        # phi_s = -torch.log(3 * self.prev_loc_error + 1)
+        gamma = 0.99
+        phi_s_prime = torch.exp(0.3 * self.loc_error)
+        phi_s = torch.exp(0.3 * self.prev_loc_error)
 
-        # phi_s_prime_rot = -torch.log(3 * self.rot_error + 1)
-        # phi_s_rot = -torch.log(3 * self.prev_rot_error + 1)
+        phi_s_prime_rot = torch.exp(0.2 * self.rot_error)
+        phi_s_rot = torch.exp(0.2 * self.prev_rot_error)
 
-        # r_pos = gamma*phi_s_prime - phi_s 
-        # r_rot = gamma*phi_s_prime_rot - phi_s_rot
+        r_pos = gamma*phi_s_prime - phi_s 
+        r_rot = gamma*phi_s_prime_rot - phi_s_rot
 
         # ========== Approach Reward (2): Distance Reward Shaping ===========
-        r_pos = 1 - torch.tanh(self.loc_error/3.0)
-        r_rot = 1 - torch.tanh(self.rot_error/0.5)
+        # r_pos = 1 - torch.tanh(self.loc_error/3.0)
+        # r_rot = 1 - torch.tanh(self.rot_error/0.5)
 
         # print(f"pos_error : {self.loc_error[0]}")
         # print(f"pos_reward : {r_pos[0]}")
@@ -216,7 +216,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         loc_noise_y = sample_uniform(-0.3, 0.3, (len(env_ids), 1), device=self.device)
         loc_noise_z = sample_uniform(0.1, 0.5, (len(env_ids), 1), device=self.device)
         loc_noise = torch.cat([loc_noise_x, loc_noise_y, loc_noise_z], dim=-1)
-        object_default_state = torch.zeros_like(self._robot.data.default_root_state[env_ids], device=self.device)
+        object_default_state = torch.zeros_like(self._robot.data.root_state_w[env_ids], device=self.device)
         object_default_state[:, :3] += loc_noise + self.scene.env_origins[env_ids, :3]
     
         # object(=target point) reset : Rotation
@@ -226,7 +226,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         )
 
         # Convert from World to Root Frame
-        root_pos_w = self._robot.data.default_root_state[env_ids, :7]
+        root_pos_w = self._robot.data.root_state_w[env_ids, :7]
         goal_loc_b, goal_rot_b = subtract_frame_transforms(
             root_pos_w[:, :3], root_pos_w[:, 3:7], object_default_state[:, :3], object_default_state[:, 3:7])
 
@@ -268,7 +268,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # ======== Visualization ==========
         self.via_marker.visualize(self.processed_actions[:, :3] + self.robot_grasp_pos_w[:, :3])
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
-        self.target_marker.visualize(self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
+        self.target_marker.visualize(self.goal_pos_b[:, :3] + root_pos_w[:, :3], self.goal_pos_w[:, 3:7])
         
 
 @torch.jit.script
