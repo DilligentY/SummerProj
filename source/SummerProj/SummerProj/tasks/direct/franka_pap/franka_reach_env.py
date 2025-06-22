@@ -130,11 +130,7 @@ class FrankaReachEnv(FrankaBaseEnv):
                                  self.robot_dof_res_lower_limits, 
                                  self.robot_dof_res_upper_limits)
         
-        joint_pos_target = torch.clamp(res_joint_pos + robot_joint_pos,
-                                       self.robot_dof_lower_limits[:self.num_active_joints],
-                                       self.robot_dof_upper_limits[:self.num_active_joints])
-        
-        self.imp_commands[:, :self.num_active_joints] = joint_pos_target
+        self.imp_commands[:, :self.num_active_joints] = res_joint_pos
         self.imp_controller.set_command(self.imp_commands)
         des_torque = self.imp_controller.compute(dof_pos=robot_joint_pos,
                                                  dof_vel=robot_joint_vel,
