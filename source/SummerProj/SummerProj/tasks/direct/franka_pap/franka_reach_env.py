@@ -241,9 +241,10 @@ class FrankaReachEnv(FrankaBaseEnv):
     
         # object(=target point) reset : Rotation
         rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
-        object_default_state[:, 3:7] = randomize_rotation(
-            rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
-        )
+        object_default_state[:, 3:7] = self._robot.data.body_state_w[env_ids, self._robot_entity.body_ids[0], 3:7]
+        # object_default_state[:, 3:7] = randomize_rotation(
+        #     rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
+        # )
 
         # Convert from World to Root Frame
         root_pos_w = self._robot.data.root_state_w[env_ids, :7]
