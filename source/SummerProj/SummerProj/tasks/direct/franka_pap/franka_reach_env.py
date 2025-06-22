@@ -121,7 +121,11 @@ class FrankaReachEnv(FrankaBaseEnv):
                                  self.robot_dof_res_lower_limits, 
                                  self.robot_dof_res_upper_limits)
         
-        self.imp_commands[:, :self.num_active_joints] = res_joint_pos
+        joint_pos_target = torch.clamp(res_joint_pos + robot_joint_pos,
+                                       self.robot_dof_lower_limits[:self.num_active_joints],
+                                       self.robot_dof_upper_limits[:self.num_active_joints])
+        
+        self.imp_commands[:, :self.num_active_joints] = joint_pos_target
         self.imp_controller.set_command(self.imp_commands)
         des_torque = self.imp_controller.compute(dof_pos=robot_joint_pos,
                                                  dof_vel=robot_joint_vel,
@@ -134,7 +138,7 @@ class FrankaReachEnv(FrankaBaseEnv):
 
     def _get_dones(self):
         self._compute_intermediate_values()
-        self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-2)
+        self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-1)
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         terminated = self.is_reach
         return terminated, truncated
@@ -166,7 +170,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         # r_rot = gamma*phi_s_prime_rot - phi_s_rot
 
         # ========== Approach Reward (2): Distance Reward Shaping ===========
-        # r_pos = 1 - torch.tanh(self.loc_error/3.0)
+        # r_pos = 1 - torch.tanh(self.loc_error/1.5)
         # r_rot = 1 - torch.tanh(self.rot_error/0.5)
 
         # print(f"pos_error : {self.loc_error[0]}")
@@ -178,7 +182,10 @@ class FrankaReachEnv(FrankaBaseEnv):
         r_success = self.is_reach.float()
         
         # =========== Summation =============
-        reward = self.cfg.w_pos * r_pos + self.cfg.w_rot * r_rot - self.cfg.w_penalty * action_norm + r_success
+        reward = self.cfg.w_pos * r_pos + \
+                 self.cfg.w_rot * r_rot - \
+                 self.cfg.w_penalty * action_norm + \
+                 self.cfg.w_success * r_success
 
         # print(f"reward of env1 : {reward[0]}")
         # print(f"--------------------------------------")
@@ -194,6 +201,10 @@ class FrankaReachEnv(FrankaBaseEnv):
             - 1.0
         )
 
+        object_loc_tcp, object_rot_tcp = subtract_frame_transforms(
+        self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7], self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
+        goal_pos_tcp = torch.cat([object_loc_tcp, object_rot_tcp], dim=1)
+
         obs = torch.cat(
             (   
                 # robot joint pose (7 not 9)
@@ -204,6 +215,8 @@ class FrankaReachEnv(FrankaBaseEnv):
                 self.robot_grasp_pos_b,
                 # object position w.r.t Root frame (7)
                 self.goal_pos_b,
+                # object position w.r.t TCP frame (7)
+                goal_pos_tcp
             ), dim=1
         )
 
@@ -219,9 +232,9 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # ============ Target Point 리셋 ===============
         # object(=target point) reset : Location
-        loc_noise_x = sample_uniform(0.5, 0.8, (len(env_ids), 1), device=self.device)
+        loc_noise_x = sample_uniform(0.3, 0.6, (len(env_ids), 1), device=self.device)
         loc_noise_y = sample_uniform(-0.3, 0.3, (len(env_ids), 1), device=self.device)
-        loc_noise_z = sample_uniform(0.1, 0.5, (len(env_ids), 1), device=self.device)
+        loc_noise_z = sample_uniform(0.1, 0.3, (len(env_ids), 1), device=self.device)
         loc_noise = torch.cat([loc_noise_x, loc_noise_y, loc_noise_z], dim=-1)
         object_default_state = torch.zeros_like(self._robot.data.root_state_w[env_ids], device=self.device)
         object_default_state[:, :3] += loc_noise + self.scene.env_origins[env_ids, :3]

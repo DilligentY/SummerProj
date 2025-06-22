@@ -20,7 +20,7 @@ class FrankaReachEnvCfg(FrankaBaseEnvCfg):
     episode_length_s = 10.0
     decimation = 10
     action_space = 20
-    observation_space = 28
+    observation_space = 35
     state_space = 0
 
     # simulation
@@ -53,5 +53,6 @@ class FrankaReachEnvCfg(FrankaBaseEnvCfg):
     # reward hyperparameter
     alpha, beta = 10.0, 4.0
     w_pos = 50.0
-    w_rot = 25.0
-    w_penalty = 0.005
+    w_rot = 5.0
+    w_penalty = 0.1
+    w_success = 10.0

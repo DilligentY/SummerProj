@@ -49,5 +49,5 @@ agent:
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 32000
+  timesteps: 64000
   environment_info: log
