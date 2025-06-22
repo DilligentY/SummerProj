@@ -98,8 +98,13 @@ class FrankaReachEnv(FrankaBaseEnv):
         robot_root_pos = self._robot.data.root_state_w[:, :7]
         robot_joint_pos = self._robot.data.joint_pos[:, :self.num_active_joints]
         robot_joint_vel = self._robot.data.joint_vel[:, :self.num_active_joints]
+
         lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
         rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
+        lfinger_pos_b, lfinger_rot_b = subtract_frame_transforms(
+            robot_root_pos[:, :3], robot_root_pos[:, 3:7], lfinger_pos_w[:, :3], lfinger_pos_w[:, 3:7])
+        offset_vec_b = quat_apply(lfinger_rot_b, self.tcp_offset)
+
         robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
         robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
             robot_root_pos[:, :3], robot_root_pos[:, 3:7], robot_grasp_pos_w[:, :3], robot_grasp_pos_w[:, 3:7])
@@ -108,7 +113,11 @@ class FrankaReachEnv(FrankaBaseEnv):
         gen_grav = self._robot.root_physx_view.get_gravity_compensation_forces()[:, :self.num_active_joints]
 
         # ========= Inverse Kinematics =========
+        # Left finger 기준 Jacobian Matrix 계산
         jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
+        # TCP 기준으로 Jacobian 변환
+        S_offset = compute_skew_symmetric_matrix(offset_vec_b)
+        jacobian[:, :3, :] -= torch.bmm(S_offset, jacobian[:, 3:6, :])
         # Target Joint Angle 계산
         joint_pos_des = self.ik_controller.compute(robot_grasp_loc_b, 
                                                    robot_grasp_rot_b, 
@@ -321,3 +330,31 @@ def compute_delta_rot(base_angle: torch.Tensor, delta_angle: torch.Tensor) -> to
         delta_rot = quat_from_angle_axis(delta_rot_angle, delta_rot_axis_normalized)
         target_delta_rot_b = quat_mul(delta_rot, base_angle)
         return target_delta_rot_b
+
+@torch.jit.script
+def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
+    """
+        주어진 3D 벡터 배치를 왜대칭 행렬 배치로 변환합니다.
+
+        이 함수는 외적 연산(a x b)을 행렬 곱(S(a) * b)으로 변환하는 데 사용됩니다.
+
+        Args:
+            vec: (N, 3) 형태의 3D 벡터 텐서. N은 배치 크기입니다.
+
+        Returns:
+            (N, 3, 3) 형태의 왜대칭 행렬 텐서.
+    """
+    batch_size = vec.shape[0]
+    device = vec.device
+    dtype = vec.dtype
+
+    S = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
+    
+    S[:, 0, 1] = -vec[:, 2]
+    S[:, 0, 2] =  vec[:, 1]
+    S[:, 1, 0] =  vec[:, 2]
+    S[:, 1, 2] = -vec[:, 0]
+    S[:, 2, 0] = -vec[:, 1]
+    S[:, 2, 1] =  vec[:, 0]
+
+    return S

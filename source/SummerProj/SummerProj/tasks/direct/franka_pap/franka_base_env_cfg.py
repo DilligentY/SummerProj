@@ -181,7 +181,7 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
     
     # Scene entities
     robot_entity: SceneEntityCfg = SceneEntityCfg(
-        "robot", joint_names=["panda_joint.*"], body_names=["panda_hand"])
+        "robot", joint_names=["panda_joint.*"], body_names=["panda_leftfinger"])
 
     # Joint Control Action scale
     loc_res_scale = 0.1 

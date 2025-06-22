@@ -175,6 +175,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     kp_table = torch.tensor([100, 80, 80, 80, 80, 80, 80], device=scene.device)
     zeta         = 0.3                       # Damping ratio(=가상 댐퍼 비율)
     joint_limits = robot.data.joint_pos_limits
+    offset = torch.tensor([0.0, 0.0, 0.045], device=scene.device).unsqueeze(0)
 
     # ---------- 슬라이스 정의 ----------
     pos_slice       = slice(0, n_j)
@@ -258,6 +259,10 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         # Get the tcp pose in world frame
         lfinger_pose_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
         rfinger_pose_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
+        lfinger_pos_b, lfinger_rot_b = subtract_frame_transforms(
+            root_pose_w[:, :3], root_pose_w[:, 3:7], lfinger_pose_w[:, :3], lfinger_pose_w[:, 3:7])
+        offset_vec_b = quat_apply(lfinger_rot_b, offset)
+
         tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], torch.tensor([0.0, 0.0, 0.045], device=scene.device))
         tcp_pose_w = torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)
         # Compute the tcp pose in the base frame
@@ -297,6 +302,9 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         # --------- Controller 동작 (IK) -------------
         # Compute Jacobian
         jacobian = robot.root_physx_view.get_jacobians()[:, jacobi_idx, :, robot_entity_cfg.joint_ids]
+        # Compute Jacobian for TCP Point
+        S_offset = compute_skew_symmetric_matrix(offset_vec_b)
+        jacobian[:, :3, :] -= torch.bmm(S_offset, jacobian[:, 3:6, :])
         # Get the root & joint Pose in world frame
         joint_pos = robot.data.joint_pos[:, robot_entity_cfg.joint_ids]
         joint_vel = robot.data.joint_vel[:, robot_entity_cfg.joint_ids]
@@ -327,7 +335,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
 
         lfinger_pose_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
         rfinger_pose_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
-        tcp_pose_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], torch.tensor([0.0, 0.0, 0.045], device=scene.device))
+        tcp_pose_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
         tcp_pos_w = torch.cat((tcp_pose_w, lfinger_pose_w[:, 3:7]), dim=1)
 
         tcp_marker.visualize(tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
@@ -390,8 +398,35 @@ def select_target_keypoint(points: torch.Tensor, object_pose: torch.Tensor) -> t
     
     return torch.cat((target_point_loc.squeeze_(0), object_pose[:, 3:7]), dim=-1)
 
+def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
+    """
+    주어진 3D 벡터 배치를 왜대칭 행렬 배치로 변환합니다.
+
+    이 함수는 외적 연산(a x b)을 행렬 곱(S(a) * b)으로 변환하는 데 사용됩니다.
+
+    Args:
+        vec: (N, 3) 형태의 3D 벡터 텐서. N은 배치 크기입니다.
+
+    Returns:
+        (N, 3, 3) 형태의 왜대칭 행렬 텐서.
+    """
+    batch_size = vec.shape[0]
+    device = vec.device
+    dtype = vec.dtype
+
+    S = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
+
+    S[:, 0, 1] = -vec[:, 2]
+    S[:, 0, 2] =  vec[:, 1]
+    S[:, 1, 0] =  vec[:, 2]
+    S[:, 1, 2] = -vec[:, 0]
+    S[:, 2, 0] = -vec[:, 1]
+    S[:, 2, 1] =  vec[:, 0]
+
+    return S
 
 
 if __name__ == "__main__":
     main()
     simulation_app.close()
+
