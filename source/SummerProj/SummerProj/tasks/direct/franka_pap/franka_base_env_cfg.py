@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 from dataclasses import MISSING
+from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 import isaaclab.sim as sim_utils
 import isaaclab.envs.mdp as mdp
@@ -93,6 +94,18 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
 
     robot: ArticulationCfg = FRANKA_PANDA_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
+        spawn=sim_utils.UsdFileCfg(
+        usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda_instanceable.usd",
+        activate_contact_sensors=False,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            max_depenetration_velocity=5.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True, solver_position_iteration_count=12, solver_velocity_iteration_count=0
+        ),
+        # collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+        ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.0),
             joint_pos={
@@ -104,7 +117,7 @@ class FrankaBaseEnvCfg(DirectRLEnvCfg):
             "panda_joint6": 3.037,
             "panda_joint7": 0.741,
             "panda_finger_joint.*": 0.04,
-        },
+        }
         ))
     # Impedance Controller를 사용하는 경우, 액추에이터 PD제어 모델 사용 X (중복 토크 계산)
     # 액추에이터에 Impedance Controller가 붙음으로써 최하단 제어기의 역할을 하게 되는 개념.

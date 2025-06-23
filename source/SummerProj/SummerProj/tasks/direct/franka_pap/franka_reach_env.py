@@ -102,22 +102,24 @@ class FrankaReachEnv(FrankaBaseEnv):
         robot_joint_vel = self._robot.data.joint_vel[:, :self.num_active_joints]
 
         hand_pos_w = self._robot.data.body_state_w[:, self.hand_link_idx, :7]
+        _, hand_rot_b = subtract_frame_transforms(
+            robot_root_pos[:, :3], robot_root_pos[:, 3:7], hand_pos_w[:, :3], hand_pos_w[:, 3:7])
         robot_grasp_pos_b = calculate_robot_tcp(hand_pos_w, robot_root_pos, self.tcp_offset_hand)
 
         gen_mass = self._robot.root_physx_view.get_generalized_mass_matrices()[:, :self.num_active_joints, :self.num_active_joints]
         gen_grav = self._robot.root_physx_view.get_gravity_compensation_forces()[:, :self.num_active_joints]
 
         # ========= Inverse Kinematics =========
-        # Hand 기준 Jacobian Matrix 계산
-        jacobian_w = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
         if robot_grasp_pos_b[:, 3:7].norm() != 0:
+            # Hand 기준 Jacobian Matrix 계산
+            jacobian_w = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
             # TCP Frame으로 Jacobian 변환
-            jacobian_t = self.compute_frame_jacobian(jacobian_w)
+            jacobian_t = self.compute_frame_jacobian(hand_rot_b, jacobian_w)
             # Target Joint Angle 계산
             joint_pos_des = self.ik_controller.compute(robot_grasp_pos_b[:, :3], 
-                                                    robot_grasp_pos_b[:, 3:7], 
-                                                    jacobian_t, 
-                                                    robot_joint_pos)
+                                                       robot_grasp_pos_b[:, 3:7], 
+                                                       jacobian_t, 
+                                                       robot_joint_pos)
         else:
             joint_pos_des = robot_joint_pos.clone()
     
@@ -292,7 +294,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.target_marker.visualize(self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
     
 
-    def compute_frame_jacobian(self, jacobian_w: torch.Tensor) -> torch.Tensor:
+    def compute_frame_jacobian(self, parent_rot_b, jacobian_w: torch.Tensor) -> torch.Tensor:
         """Computes the geometric Jacobian of the target frame in the root frame.
 
         This function accounts for the target frame offset and applies the necessary transformations to obtain
@@ -309,7 +311,8 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # ====== TCP의 Offset을 고려한 Frame Jacobian 보정 ======
         # ====== v_b = v_a + w * r_{ba} Kinematics 관계 반영 ======
-        s_offset = compute_skew_symmetric_matrix(self.tcp_offset_hand[:, :3])
+        offset_b = quat_apply(parent_rot_b, self.tcp_offset_hand[:, :3])
+        s_offset = compute_skew_symmetric_matrix(offset_b[:, :3])
         jacobian_b[:, :3, :] += torch.bmm(-s_offset, jacobian_b[:, 3:, :])
         jacobian_b[:, 3:, :] = torch.bmm(matrix_from_quat(self.tcp_offset_hand[:, 3:7]), jacobian_b[:, 3:, :])
 
