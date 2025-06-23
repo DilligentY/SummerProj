@@ -50,7 +50,8 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.controllers.joint_impedance import JointImpedanceController, JointImpedanceControllerCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, quat_apply, quat_error_magnitude
+from isaaclab.utils.math import subtract_frame_transforms, quat_conjugate, quat_from_angle_axis, \
+                                matrix_from_quat, quat_inv, quat_apply, quat_error_magnitude, combine_frame_transforms, quat_mul
 
 from RRT.RRT_wrapper import RRTWrapper
 from utils import Env
@@ -175,7 +176,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     kp_table = torch.tensor([100, 80, 80, 80, 80, 80, 80], device=scene.device)
     zeta         = 0.3                       # Damping ratio(=가상 댐퍼 비율)
     joint_limits = robot.data.joint_pos_limits
-    offset = torch.tensor([0.0, 0.0, 0.107], device=scene.device).repeat([scene.num_envs, 1])
+    offset = torch.tensor([0.0, 0.0, 0.107, 1.0, 0.0, 0.0, 0.0], device=scene.device).repeat([scene.num_envs, 1])
 
     # ---------- 슬라이스 정의 ----------
     pos_slice       = slice(0, n_j)
@@ -213,13 +214,11 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     # ============ Motion Planner Setting (RRT & IK) ===============
     # ------- TCP 6D Pose 정의 (월드 프레임, Root 프레임) -------
     root_start_w = robot.data.root_state_w[:, :7]
-    lfinger_start_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
-    rfinger_start_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
-    tcp_start_loc_w = (lfinger_start_w[:, :3] + rfinger_start_w[:, :3]) / 2.0 + quat_apply(lfinger_start_w[:, 3:7], torch.tensor([0.0, 0.0, 0.045], device=scene.device))
-    tcp_start_pose_w = torch.cat((tcp_start_loc_w, lfinger_start_w[:, 3:7]), dim=1)
-    tcp_start_loc_b, tcp_start_rot_b = subtract_frame_transforms(
-        root_start_w[:, :3], root_start_w[:, 3:7], tcp_start_pose_w[:, :3], tcp_start_pose_w[:, 3:7])
-    tcp_start_pose_b = torch.cat((tcp_start_loc_b, tcp_start_rot_b), dim=1)
+    hand_pos_w = robot.data.body_state_w[:, hand_link_idx, :7]
+    tcp_start_pos_b = calculate_robot_tcp(hand_pos_w, root_start_w, offset)
+    tcp_start_loc_w = root_start_w[:, :3] + quat_apply(root_start_w[:, 3:7], tcp_start_pos_b[:, :3])
+    tcp_start_rot_w = quat_mul(root_start_w[:, 3:7], tcp_start_pos_b[:, 3:7])
+    tcp_start_pos_w = torch.cat((tcp_start_loc_w, tcp_start_rot_w), dim=1)
 
     # ------- Target End-Effector Position 정의 --------
     object_pose_w = object.data.root_state_w[:, :7]
@@ -231,14 +230,14 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     object_pose_b[:, 3:7] = torch.tensor([0.3, 0.2, 0.0, 0.0], device=scene.device)
     
     # ------- Trajectory Planner : RRT -------
-    motion_planner = RRTWrapper(start=tcp_start_pose_b.squeeze_(0), goal=object_pose_b.squeeze_(0), env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
+    motion_planner = RRTWrapper(start=tcp_start_pos_b.squeeze_(0), goal=object_pose_b.squeeze_(0), env=Env.Map3D(5, 5, 5), max_dist=0.1, num_traj_points=50)
     optimal_trajectory = motion_planner.plan()
 
     # ------- Motion Planner : Inverse Kinematics -------
     ik_commands[:, :3] = optimal_trajectory[0, :3]
     ik_commands[:, 3:] = optimal_trajectory[0, 3:7]
     diff_ik_controller.reset()
-    diff_ik_controller.set_command(ik_commands, tcp_start_pose_b[:3], tcp_start_pose_b[3:7])
+    diff_ik_controller.set_command(ik_commands, tcp_start_pos_w[:3], tcp_start_pos_w[3:7])
 
 
 
@@ -257,18 +256,11 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         # Get the root & joint Pose in world frame
         root_pose_w = robot.data.root_state_w[:, :7]
         # Get the tcp pose in world frame
-        lfinger_pose_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
-        rfinger_pose_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
-        lfinger_pos_b, lfinger_rot_b = subtract_frame_transforms(
-            root_pose_w[:, :3], root_pose_w[:, 3:7], lfinger_pose_w[:, :3], lfinger_pose_w[:, 3:7])
-        offset_vec_b = quat_apply(lfinger_rot_b, offset)
-
-        tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], torch.tensor([0.0, 0.0, 0.045], device=scene.device))
-        tcp_pose_w = torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)
-        # Compute the tcp pose in the base frame
-        tcp_loc_b, tcp_rot_b = subtract_frame_transforms(
-                root_pose_w[:, :3], root_pose_w[:, 3:7], tcp_pose_w[:, :3], tcp_pose_w[:, 3:7])
-        tcp_pose_b = torch.cat((tcp_loc_b, tcp_rot_b), dim=1)
+        hand_pos_w = robot.data.body_state_w[:, hand_link_idx, :7]
+        tcp_pose_b = calculate_robot_tcp(hand_pos_w, root_pose_w, offset)
+        tcp_loc_w = root_pose_w[:, :3] + quat_apply(root_pose_w[:, 3:7], tcp_pose_b[:, :3])
+        tcp_rot_w = quat_mul(root_pose_w[:, 3:7], tcp_pose_b[:, 3:7])
+        tcp_pose_w = torch.cat((tcp_loc_w, tcp_rot_w), dim=1)
         # Compute the position error in the base frame
         tcp_pos_err_b = tcp_pose_b[:, :3] - ik_commands[:, :3]
         tcp_rot_err_b = quat_error_magnitude(tcp_pose_b[:, 3:7], ik_commands[:, 3:])
@@ -303,13 +295,12 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         # Compute Jacobian
         jacobian = robot.root_physx_view.get_jacobians()[:, jacobi_idx, :, robot_entity_cfg.joint_ids]
         # Compute Jacobian for TCP Point
-        S_offset = compute_skew_symmetric_matrix(offset_vec_b)
-        jacobian[:, :3, :] -= torch.bmm(S_offset, jacobian[:, 3:6, :])
+        jacobian_t = compute_frame_jacobian(robot, jacobian, offset)
         # Get the root & joint Pose in world frame
         joint_pos = robot.data.joint_pos[:, robot_entity_cfg.joint_ids]
         joint_vel = robot.data.joint_vel[:, robot_entity_cfg.joint_ids]
         # Compute the desired joint position using the IK and the end-effector pose from the base frame
-        joint_pos_des = diff_ik_controller.compute(tcp_loc_b, tcp_rot_b, jacobian, joint_pos)
+        joint_pos_des = diff_ik_controller.compute(tcp_pose_b[:, :3], tcp_pose_b[:, 3:7], jacobian_t, joint_pos)
 
         
         # --------- Controller 동작 (Impedance) ---------
@@ -333,12 +324,15 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         scene.update(sim_dt)
         robot.update(sim_dt)
 
-        lfinger_pose_w = robot.data.body_state_w[:, left_finger_link_idx, :7]
-        rfinger_pose_w = robot.data.body_state_w[:, right_finger_link_idx, :7]
-        tcp_pose_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
-        tcp_pos_w = torch.cat((tcp_pose_w, lfinger_pose_w[:, 3:7]), dim=1)
+        root_pose_w = robot.data.root_state_w[:, :7]
+        # Get the tcp pose in world frame
+        hand_pos_w = robot.data.body_state_w[:, hand_link_idx, :7]
+        tcp_pose_b = calculate_robot_tcp(hand_pos_w, root_pose_w, offset)
+        tcp_loc_w = root_pose_w[:, :3] + quat_apply(root_pose_w[:, 3:7], tcp_pose_b[:, :3])
+        tcp_rot_w = quat_mul(root_pose_w[:, 3:7], tcp_pose_b[:, 3:7])
+        tcp_pose_w = torch.cat((tcp_loc_w, tcp_rot_w), dim=1)
 
-        tcp_marker.visualize(tcp_pos_w[:, :3], tcp_pos_w[:, 3:7])
+        tcp_marker.visualize(tcp_pose_w[:, :3], tcp_pose_w[:, 3:7])
         traj_marker.visualize(optimal_trajectory[:, :3] + scene.env_origins + robot.data.default_root_state[:, :3])
         goal_marker.visualize(object_pose_w[:, :3], object_pose_w[:, 3:7])
         
@@ -409,7 +403,7 @@ def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
 
     return S
 
-def compute_frame_jacobian(self, jacobian_w: torch.Tensor) -> torch.Tensor:
+def compute_frame_jacobian(robot:Articulation, jacobian_w: torch.Tensor, offset:torch.Tensor) -> torch.Tensor:
     """Computes the geometric Jacobian of the target frame in the root frame.
 
     This function accounts for the target frame offset and applies the necessary transformations to obtain
@@ -417,7 +411,7 @@ def compute_frame_jacobian(self, jacobian_w: torch.Tensor) -> torch.Tensor:
     """
     # ========= 데이터 세팅 =========
     jacobian_b = jacobian_w.clone()
-    root_quat = self._robot.data.root_quat_w
+    root_quat = robot.data.root_quat_w
     root_rot_matrix = matrix_from_quat(quat_inv(root_quat))
 
     # ====== Hand Link의 Root Frame에서의 Jacobian 계산 ======
@@ -426,9 +420,9 @@ def compute_frame_jacobian(self, jacobian_w: torch.Tensor) -> torch.Tensor:
 
     # ====== TCP의 Offset을 고려한 Frame Jacobian 보정 ======
     # ====== v_b = v_a + w * r_{ba} Kinematics 관계 반영 ======
-    s_offset = compute_skew_symmetric_matrix(self.tcp_offset_hand[:, :3])
+    s_offset = compute_skew_symmetric_matrix(offset[:, :3])
     jacobian_b[:, :3, :] += torch.bmm(-s_offset, jacobian_b[:, 3:, :])
-    jacobian_b[:, 3:, :] = torch.bmm(matrix_from_quat(self.tcp_offset_hand[:, 3:7]), jacobian_b[:, 3:, :])
+    jacobian_b[:, 3:, :] = torch.bmm(matrix_from_quat(offset[:, 3:7]), jacobian_b[:, 3:, :])
 
     return jacobian_b
 
