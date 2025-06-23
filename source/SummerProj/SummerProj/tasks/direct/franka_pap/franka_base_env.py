@@ -31,7 +31,7 @@ class FrankaBaseEnv(DirectRLEnv):
 
         # Joint & Link Index
         self.joint_idx = self._robot.find_joints("panda_joint.*")[0]
-        self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
+        self.hand_link_idx = self._robot.find_bodies("panda_hand")[0][0]
         self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
         self.left_finger_joint_idx = self._robot.find_joints("panda_finger_joint1")[0][0]
         self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]

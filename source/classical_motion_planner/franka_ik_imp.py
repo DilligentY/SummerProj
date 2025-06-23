@@ -136,6 +136,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
 
     tcp_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/tcp_current"))
+    hand_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/hand_current"))
     goal_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_goal"))
     traj_marker = VisualizationMarkers(point_marker_cfg.replace(prim_path="Visuals/ee_traj"))
 
@@ -156,7 +157,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     
     # =============== Link and Joint Indexs =================
     joint_ids = robot_entity_cfg.joint_ids
-    hand_link_idx = robot.find_bodies("panda_link7")[0][0]
+    hand_link_idx = robot.find_bodies("panda_hand")[0][0]
     left_finger_link_idx = robot.find_bodies("panda_leftfinger")[0][0]
     left_finger_joint_idx = robot.find_joints("panda_finger_joint1")[0][0]
     right_finger_link_idx = robot.find_bodies("panda_rightfinger")[0][0]
@@ -324,14 +325,15 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         scene.update(sim_dt)
         robot.update(sim_dt)
 
-        root_pose_w = robot.data.root_state_w[:, :7]
         # Get the tcp pose in world frame
+        root_pose_w = robot.data.root_state_w[:, :7]
         hand_pos_w = robot.data.body_state_w[:, hand_link_idx, :7]
         tcp_pose_b = calculate_robot_tcp(hand_pos_w, root_pose_w, offset)
         tcp_loc_w = root_pose_w[:, :3] + quat_apply(root_pose_w[:, 3:7], tcp_pose_b[:, :3])
         tcp_rot_w = quat_mul(root_pose_w[:, 3:7], tcp_pose_b[:, 3:7])
         tcp_pose_w = torch.cat((tcp_loc_w, tcp_rot_w), dim=1)
 
+        hand_marker.visualize(hand_pos_w[:, :3], hand_pos_w[:, 3:7])
         tcp_marker.visualize(tcp_pose_w[:, :3], tcp_pose_w[:, 3:7])
         traj_marker.visualize(optimal_trajectory[:, :3] + scene.env_origins + robot.data.default_root_state[:, :3])
         goal_marker.visualize(object_pose_w[:, :3], object_pose_w[:, 3:7])
@@ -373,7 +375,6 @@ def calculate_robot_tcp(hand_pos_w: torch.Tensor,
 
     return torch.cat((tcp_loc_b, tcp_rot_b), dim=1)
     
-    return torch.cat((target_point_loc.squeeze_(0), object_pose[:, 3:7]), dim=-1)
 
 def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
     """Computes the skew-symmetric matrix of a vector.
