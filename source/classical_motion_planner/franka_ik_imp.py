@@ -78,7 +78,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
     )
     # robot
-    robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot",
+    robot = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot",
                                              init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.0),
             joint_pos={
@@ -95,10 +95,10 @@ class RobotSceneCfg(InteractiveSceneCfg):
         )
     # Impedance Controller를 사용하는 경우, 액추에이터 PD제어 모델 사용 X (중복 토크 계산)
     # 액추에이터에 Impedance Controller가 붙음으로써 최하단 제어기의 역할을 하게 되는 개념.
-    # robot.actuators["panda_shoulder"].stiffness = 0.0
-    # robot.actuators["panda_shoulder"].damping = 0.0
-    # robot.actuators["panda_forearm"].stiffness = 0.0
-    # robot.actuators["panda_forearm"].damping = 0.0
+    robot.actuators["panda_shoulder"].stiffness = 0.0
+    robot.actuators["panda_shoulder"].damping = 0.0
+    robot.actuators["panda_forearm"].stiffness = 0.0
+    robot.actuators["panda_forearm"].damping = 0.0
     
     object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
@@ -304,21 +304,21 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         joint_pos_des = diff_ik_controller.compute(tcp_pose_b[:, :3], tcp_pose_b[:, 3:7], jacobian_t, joint_pos)
 
         
-        robot.set_joint_position_target(joint_pos_des, joint_ids)
+        # robot.set_joint_position_target(joint_pos_des, joint_ids)
 
         # --------- Controller 동작 (Impedance) ---------
         # Set command for Impedance control
-        # imp_commands[:, :7] = joint_pos_des - joint_pos
-        # joint_imp_controller.set_command(command=imp_commands)
-        # # Target torques 계산 (중력, 관성, 코리올리 힘 보상)
-        # tau = joint_imp_controller.compute(
-        #     dof_pos      = joint_pos,
-        #     dof_vel      = joint_vel,
-        #     mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :num_active_joint, :num_active_joint],
-        #     gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, :num_active_joint]
-        # )
-        # # Torque 신호 내부 버퍼에 저장
-        # robot.set_joint_effort_target(tau, joint_ids=robot_entity_cfg.joint_ids)
+        imp_commands[:, :7] = joint_pos_des - joint_pos
+        joint_imp_controller.set_command(command=imp_commands)
+        # Target torques 계산 (중력, 관성, 코리올리 힘 보상)
+        tau = joint_imp_controller.compute(
+            dof_pos      = joint_pos,
+            dof_vel      = joint_vel,
+            mass_matrix  = robot.root_physx_view.get_generalized_mass_matrices()[:, :num_active_joint, :num_active_joint],
+            gravity= robot.root_physx_view.get_gravity_compensation_forces()[:, :num_active_joint]
+        )
+        # Torque 신호 내부 버퍼에 저장
+        robot.set_joint_effort_target(tau, joint_ids=robot_entity_cfg.joint_ids)
         # 버퍼에 저장된 제어 신호 시뮬레이션에 모두 입력
         robot.write_data_to_sim()
 
