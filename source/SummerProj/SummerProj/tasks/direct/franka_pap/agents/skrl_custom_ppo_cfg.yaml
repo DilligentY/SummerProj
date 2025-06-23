@@ -13,7 +13,7 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   class: PPO
-  rollouts: 12
+  rollouts: 24
   learning_epochs: 8
   mini_batches: 8
   discount_factor: 0.99
@@ -49,5 +49,5 @@ agent:
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 64000
+  timesteps: 32000
   environment_info: log
