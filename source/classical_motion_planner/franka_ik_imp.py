@@ -174,7 +174,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     # ---------- 환경 준비 ----------
     sim_dt = scene.physics_dt
     n_j          = 7           # Franka: 9 (팔7+그리퍼2) 또는 7
-    kp_table = torch.tensor([50, 30, 30, 30, 30, 30, 30], device=scene.device)
+    kp_table = torch.tensor([100, 80, 80, 80, 80, 80, 80], device=scene.device)
     zeta         = 0.3                       # Damping ratio(=가상 댐퍼 비율)
     joint_limits = robot.data.joint_pos_limits
     offset = torch.tensor([0.0, 0.0, 0.107, 1.0, 0.0, 0.0, 0.0], device=scene.device).repeat([scene.num_envs, 1])
@@ -261,13 +261,13 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         tcp_pos_err_b = tcp_pose_b[:, :3] - ik_commands[:, :3]
         tcp_rot_err_b = quat_error_magnitude(tcp_pose_b[:, 3:7], ik_commands[:, 3:])
         # Visualization
-        hand_marker.visualize(hand_pos_w[:, :3], hand_pos_w[:, 3:7])
+        # hand_marker.visualize(hand_pos_w[:, :3], hand_pos_w[:, 3:7])
         tcp_marker.visualize(tcp_pose_w[:, :3], tcp_pose_w[:, 3:7])
         traj_marker.visualize(optimal_trajectory[:, :3] + robot.data.default_root_state[:, :3])
         goal_marker.visualize(object_pose_w[:, :3], object_pose_w[:, 3:7])
 
         # --------- Target Points 갱신 로직 ---------
-        if torch.norm(tcp_pos_err_b) < 5e-2:
+        if torch.norm(tcp_pos_err_b) < 5e-2 and tcp_rot_err_b < 5e-2:
             i = (i+1) %  optimal_trajectory.shape[0]
             if i == 0:
                 # Trajectory 끝에 도착하면, Reset the Scene
@@ -302,8 +302,6 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         joint_vel = robot.data.joint_vel[:, :num_active_joint]
         # Compute the desired joint position using the IK and the end-effector pose from the base frame
         joint_pos_des = diff_ik_controller.compute(tcp_pose_b[:, :3], tcp_pose_b[:, 3:7], jacobian_t, joint_pos)
-
-        # robot.set_joint_position_target(joint_pos_des, joint_ids)
 
         # --------- Controller 동작 (Impedance) ---------
         # Set command for Impedance control

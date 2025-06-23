@@ -4,7 +4,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Tutorial on spawning and interacting with an articulation.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to spawn.")
-parser.add_argument("--test_mode", type=str, default="tracking", choices=["withstand", "tracking", "plotting"])
+parser.add_argument("--test_mode", type=str, default="plotting", choices=["withstand", "tracking", "plotting"])
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
