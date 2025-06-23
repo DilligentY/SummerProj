@@ -65,7 +65,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
         prim_path="/World/defaultGroundPlane",
         spawn=sim_utils.GroundPlaneCfg(),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -1.05)),
     )
     # lights
     dome_light = AssetBaseCfg(
@@ -74,13 +74,13 @@ class RobotSceneCfg(InteractiveSceneCfg):
     # Table
     table = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 1.05], rot=[0.707, 0, 0, 0.707]),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 0.0], rot=[0.707, 0, 0, 0.707]),
         spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd"),
     )
     # robot
     robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot",
                                              init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 1.05),
+            pos=(0.0, 0.0, 0.0),
             joint_pos={
             "panda_joint1": 0.0,
             "panda_joint2": -0.569,
@@ -115,7 +115,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-                pos=(0.5, 0.2, 1.05), rot=(1.0, 0.0, 0.0, 0.0)
+                pos=(0.5, 0.2, 0.0), rot=(1.0, 0.0, 0.0, 0.0)
         ),
     )
     
@@ -267,7 +267,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
         goal_marker.visualize(object_pose_w[:, :3], object_pose_w[:, 3:7])
 
         # --------- Target Points 갱신 로직 ---------
-        if torch.norm(tcp_pos_err_b) < 5e-2 and tcp_rot_err_b < 5e-2:
+        if torch.norm(tcp_pos_err_b) < 1e-2 and tcp_rot_err_b < 5e-1:
             i = (i+1) %  optimal_trajectory.shape[0]
             if i == 0:
                 # Trajectory 끝에 도착하면, Reset the Scene
@@ -367,14 +367,15 @@ def calculate_robot_tcp(hand_pos_w: torch.Tensor,
 
 def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
     """Computes the skew-symmetric matrix of a vector.
-        Args:
-            vec: The input vector. Shape is (3,) or (N, 3).
 
-        Returns:
-            The skew-symmetric matrix. Shape is (1, 3, 3) or (N, 3, 3).
+    Args:
+        vec: The input vector. Shape is (3,) or (N, 3).
 
-        Raises:
-            ValueError: If input tensor is not of shape (..., 3).
+    Returns:
+        The skew-symmetric matrix. Shape is (1, 3, 3) or (N, 3, 3).
+
+    Raises:
+        ValueError: If input tensor is not of shape (..., 3).
     """
     # check input is correct
     if vec.shape[-1] != 3:
@@ -382,16 +383,16 @@ def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
     # unsqueeze the last dimension
     if vec.ndim == 1:
         vec = vec.unsqueeze(0)
+    # create a skew-symmetric matrix
+    skew_sym_mat = torch.zeros(vec.shape[0], 3, 3, device=vec.device, dtype=vec.dtype)
+    skew_sym_mat[:, 0, 1] = -vec[:, 2]
+    skew_sym_mat[:, 0, 2] = vec[:, 1]
+    skew_sym_mat[:, 1, 2] = -vec[:, 0]
+    skew_sym_mat[:, 1, 0] = vec[:, 2]
+    skew_sym_mat[:, 2, 0] = -vec[:, 1]
+    skew_sym_mat[:, 2, 1] = vec[:, 0]
 
-    S = torch.zeros(vec.shape[0], 3, 3, device=vec.device, dtype=vec.dtype)
-    S[:, 0, 1] = -vec[:, 2]
-    S[:, 0, 2] =  vec[:, 1]
-    S[:, 1, 0] =  vec[:, 2]
-    S[:, 1, 2] = -vec[:, 0]
-    S[:, 2, 0] = -vec[:, 1]
-    S[:, 2, 1] =  vec[:, 0]
-
-    return S
+    return skew_sym_mat
 
 def compute_frame_jacobian(robot:Articulation, hand_rot_b: torch.Tensor, jacobian_w: torch.Tensor, offset:torch.Tensor) -> torch.Tensor:
     """Computes the geometric Jacobian of the target frame in the root frame.
@@ -400,7 +401,7 @@ def compute_frame_jacobian(robot:Articulation, hand_rot_b: torch.Tensor, jacobia
     the right Jacobian from the parent body Jacobian.
     """
     # ========= 데이터 세팅 =========
-    jacobian_b = jacobian_w.clone()
+    jacobian_b = jacobian_w
     root_quat = robot.data.root_quat_w
     root_rot_matrix = matrix_from_quat(quat_inv(root_quat))
 
@@ -410,8 +411,8 @@ def compute_frame_jacobian(robot:Articulation, hand_rot_b: torch.Tensor, jacobia
 
     # ====== TCP의 Offset을 고려한 Frame Jacobian 보정 ======
     # ====== v_b = v_a + w * r_{ba} Kinematics 관계 반영 ======
-    offset_b = quat_apply(hand_rot_b, offset[:, :3])
-    s_offset = compute_skew_symmetric_matrix(offset_b)
+    # offset_b = quat_apply(hand_rot_b, offset[:, :3])
+    s_offset = compute_skew_symmetric_matrix(offset[:, :3])
     jacobian_b[:, :3, :] += torch.bmm(-s_offset, jacobian_b[:, 3:, :])
     jacobian_b[:, 3:, :] = torch.bmm(matrix_from_quat(offset[:, 3:7]), jacobian_b[:, 3:, :])
 
