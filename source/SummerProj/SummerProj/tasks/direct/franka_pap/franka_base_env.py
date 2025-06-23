@@ -59,6 +59,7 @@ class FrankaBaseEnv(DirectRLEnv):
 
         # Default TCP Offset
         self.tcp_offset = torch.tensor([0.0, 0.0, 0.045], device=self.device).repeat([self.scene.num_envs, 1])
+        self.tcp_offset_hand = torch.tensor([0.0, 0.0, 0.107, 1.0, 0.0, 0.0, 0.0], device=self.device).repeat([self.scene.num_envs, 1])
         
         # Joint Impedance Controller for Torque Control
         self.imp_controller = JointImpedanceController(cfg=self.cfg.imp_controller,

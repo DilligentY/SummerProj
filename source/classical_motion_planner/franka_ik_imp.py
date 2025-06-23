@@ -175,7 +175,7 @@ def run_simulator(sim : sim_utils.SimulationContext, scene : InteractiveScene):
     kp_table = torch.tensor([100, 80, 80, 80, 80, 80, 80], device=scene.device)
     zeta         = 0.3                       # Damping ratio(=가상 댐퍼 비율)
     joint_limits = robot.data.joint_pos_limits
-    offset = torch.tensor([0.0, 0.0, 0.045], device=scene.device).unsqueeze(0)
+    offset = torch.tensor([0.0, 0.0, 0.107], device=scene.device).repeat([scene.num_envs, 1])
 
     # ---------- 슬라이스 정의 ----------
     pos_slice       = slice(0, n_j)
@@ -362,60 +362,44 @@ def main():
     run_simulator(sim, scene)
 
 
-def compute_keypoints(
-    pose: torch.Tensor,
-    num_keypoints: int = 8,
-    size: tuple[float, float, float] = (2 * 0.03, 2 * 0.03, 2 * 0.03),
-    out: torch.Tensor | None = None,
-):
-    """Computes positions of 8 corner keypoints of a cube.
 
-    Args:
-        pose: Position and orientation of the center of the cube. Shape is (N, 7)
-        num_keypoints: Number of keypoints to compute. Default = 8
-        size: Length of X, Y, Z dimensions of cube. Default = [0.06, 0.06, 0.06]
-        out: Buffer to store keypoints. If None, a new buffer will be created.
-    """
-    num_envs = pose.shape[0]
-    if out is None:
-        out = torch.ones(num_envs, num_keypoints, 3, dtype=torch.float32, device=pose.device)
+def calculate_robot_tcp(hand_pos_w: torch.Tensor,
+                        root_pos_w: torch.Tensor,
+                        offset: torch.Tensor | None) -> torch.Tensor:
+    
+    hand_loc_b, hand_rot_b = subtract_frame_transforms(
+        root_pos_w[:, :3], root_pos_w[:, 3:7], hand_pos_w[:, :3], hand_pos_w[:, 3:7])
+
+    if offset is not None:
+        tcp_loc_b, tcp_rot_b = combine_frame_transforms(
+            hand_loc_b, hand_rot_b, offset[:, :3], offset[:, 3:7])
     else:
-        out[:] = 1.0
-    for i in range(num_keypoints):
-        # which dimensions to negate
-        n = [((i >> k) & 1) == 0 for k in range(3)]
-        corner_loc = ([(1 if n[k] else -1) * s / 2 for k, s in enumerate(size)],)
-        corner = torch.tensor(corner_loc, dtype=torch.float32, device=pose.device) * out[:, i, :]
-        # express corner position in the world frame
-        out[:, i, :] = pose[:, :3] + quat_apply(pose[:, 3:7], corner)
+        tcp_loc_b = hand_loc_b; tcp_rot_b = hand_rot_b
+    
 
-    return out
-
-
-def select_target_keypoint(points: torch.Tensor, object_pose: torch.Tensor) -> torch.Tensor:
-    rand_idx = torch.randint(0, points.shape[1], (1,),  device=points.device)
-    target_point_loc = points[:, rand_idx, :]
+    return torch.cat((tcp_loc_b, tcp_rot_b), dim=1)
     
     return torch.cat((target_point_loc.squeeze_(0), object_pose[:, 3:7]), dim=-1)
 
 def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
+    """Computes the skew-symmetric matrix of a vector.
+        Args:
+            vec: The input vector. Shape is (3,) or (N, 3).
+
+        Returns:
+            The skew-symmetric matrix. Shape is (1, 3, 3) or (N, 3, 3).
+
+        Raises:
+            ValueError: If input tensor is not of shape (..., 3).
     """
-    주어진 3D 벡터 배치를 왜대칭 행렬 배치로 변환합니다.
+    # check input is correct
+    if vec.shape[-1] != 3:
+        raise ValueError(f"Expected input vector shape mismatch: {vec.shape} != (..., 3).")
+    # unsqueeze the last dimension
+    if vec.ndim == 1:
+        vec = vec.unsqueeze(0)
 
-    이 함수는 외적 연산(a x b)을 행렬 곱(S(a) * b)으로 변환하는 데 사용됩니다.
-
-    Args:
-        vec: (N, 3) 형태의 3D 벡터 텐서. N은 배치 크기입니다.
-
-    Returns:
-        (N, 3, 3) 형태의 왜대칭 행렬 텐서.
-    """
-    batch_size = vec.shape[0]
-    device = vec.device
-    dtype = vec.dtype
-
-    S = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
-
+    S = torch.zeros(vec.shape[0], 3, 3, device=vec.device, dtype=vec.dtype)
     S[:, 0, 1] = -vec[:, 2]
     S[:, 0, 2] =  vec[:, 1]
     S[:, 1, 0] =  vec[:, 2]
@@ -424,6 +408,30 @@ def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
     S[:, 2, 1] =  vec[:, 0]
 
     return S
+
+def compute_frame_jacobian(self, jacobian_w: torch.Tensor) -> torch.Tensor:
+    """Computes the geometric Jacobian of the target frame in the root frame.
+
+    This function accounts for the target frame offset and applies the necessary transformations to obtain
+    the right Jacobian from the parent body Jacobian.
+    """
+    # ========= 데이터 세팅 =========
+    jacobian_b = jacobian_w.clone()
+    root_quat = self._robot.data.root_quat_w
+    root_rot_matrix = matrix_from_quat(quat_inv(root_quat))
+
+    # ====== Hand Link의 Root Frame에서의 Jacobian 계산 ======
+    jacobian_b[:, :3, :] = torch.bmm(root_rot_matrix, jacobian_b[:, :3, :])
+    jacobian_b[:, 3:, :] = torch.bmm(root_rot_matrix, jacobian_b[:, 3:, :])
+
+    # ====== TCP의 Offset을 고려한 Frame Jacobian 보정 ======
+    # ====== v_b = v_a + w * r_{ba} Kinematics 관계 반영 ======
+    s_offset = compute_skew_symmetric_matrix(self.tcp_offset_hand[:, :3])
+    jacobian_b[:, :3, :] += torch.bmm(-s_offset, jacobian_b[:, 3:, :])
+    jacobian_b[:, 3:, :] = torch.bmm(matrix_from_quat(self.tcp_offset_hand[:, 3:7]), jacobian_b[:, 3:, :])
+
+    return jacobian_b
+
 
 
 if __name__ == "__main__":

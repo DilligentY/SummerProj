@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from isaaclab.utils.math import quat_error_magnitude, subtract_frame_transforms, quat_from_angle_axis, quat_mul, sample_uniform, quat_apply, saturate
+from isaaclab.utils.math import quat_error_magnitude, subtract_frame_transforms, \
+                                combine_frame_transforms, quat_from_angle_axis, quat_mul, quat_inv, sample_uniform, saturate, \
+                                matrix_from_quat, quat_apply
 from isaaclab.markers import VisualizationMarkers
 
 from .franka_base_env import FrankaBaseEnv
@@ -56,8 +58,8 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.target_marker = VisualizationMarkers(self.cfg.goal_pos_marker_cfg)
         self.via_marker = VisualizationMarkers(self.cfg.via_pos_marker_cfg)
 
-    # ================= IK + Controller Gain =================
 
+    # ================= IK + Controller Gain =================
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         actions.shape  =  (N, 20)
@@ -78,7 +80,7 @@ class FrankaReachEnv(FrankaBaseEnv):
         
         # ===== IK Command 세팅 for absolute control =====
         target_loc_b = self.robot_grasp_pos_b[:, :3] + self.processed_actions[:, :3]
-        target_rot_b = compute_delta_rot(self.robot_grasp_pos_b[:, 3:7], self.processed_actions[:, 3:6])
+        target_rot_b = compute_target_rot(self.robot_grasp_pos_b[:, 3:7], self.processed_actions[:, 3:6])
         abs_target_pos_b = torch.cat([target_loc_b, target_rot_b], dim=-1)
 
         self.ik_controller.set_command(abs_target_pos_b,
@@ -99,30 +101,25 @@ class FrankaReachEnv(FrankaBaseEnv):
         robot_joint_pos = self._robot.data.joint_pos[:, :self.num_active_joints]
         robot_joint_vel = self._robot.data.joint_vel[:, :self.num_active_joints]
 
-        lfinger_pos_w = self._robot.data.body_state_w[:, self.left_finger_link_idx, :7]
-        rfinger_pos_w = self._robot.data.body_state_w[:, self.right_finger_link_idx, :7]
-        lfinger_pos_b, lfinger_rot_b = subtract_frame_transforms(
-            robot_root_pos[:, :3], robot_root_pos[:, 3:7], lfinger_pos_w[:, :3], lfinger_pos_w[:, 3:7])
-        offset_vec_b = quat_apply(lfinger_rot_b, self.tcp_offset)
-
-        robot_grasp_pos_w = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset)
-        robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
-            robot_root_pos[:, :3], robot_root_pos[:, 3:7], robot_grasp_pos_w[:, :3], robot_grasp_pos_w[:, 3:7])
+        hand_pos_w = self._robot.data.body_state_w[:, self.hand_link_idx, :7]
+        robot_grasp_pos_b = calculate_robot_tcp(hand_pos_w, robot_root_pos, self.tcp_offset_hand)
 
         gen_mass = self._robot.root_physx_view.get_generalized_mass_matrices()[:, :self.num_active_joints, :self.num_active_joints]
         gen_grav = self._robot.root_physx_view.get_gravity_compensation_forces()[:, :self.num_active_joints]
 
         # ========= Inverse Kinematics =========
-        # Left finger 기준 Jacobian Matrix 계산
-        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
-        # TCP 기준으로 Jacobian 변환
-        S_offset = compute_skew_symmetric_matrix(offset_vec_b)
-        jacobian[:, :3, :] -= torch.bmm(S_offset, jacobian[:, 3:6, :])
-        # Target Joint Angle 계산
-        joint_pos_des = self.ik_controller.compute(robot_grasp_loc_b, 
-                                                   robot_grasp_rot_b, 
-                                                   jacobian, 
-                                                   robot_joint_pos)
+        # Hand 기준 Jacobian Matrix 계산
+        jacobian_w = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
+        if robot_grasp_pos_b[:, 3:7].norm() != 0:
+            # TCP Frame으로 Jacobian 변환
+            jacobian_t = self.compute_frame_jacobian(jacobian_w)
+            # Target Joint Angle 계산
+            joint_pos_des = self.ik_controller.compute(robot_grasp_pos_b[:, :3], 
+                                                    robot_grasp_pos_b[:, 3:7], 
+                                                    jacobian_t, 
+                                                    robot_joint_pos)
+        else:
+            joint_pos_des = robot_joint_pos.clone()
     
         # ======== Joint Impedance Regulator ========
         # Joint Clipping for stable Learning (To Do: Residual Curriculum Learning)
@@ -237,19 +234,19 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # ============ Target Point 리셋 ===============
         # object(=target point) reset : Location
-        loc_noise_x = sample_uniform(0.3, 0.6, (len(env_ids), 1), device=self.device)
+        loc_noise_x = sample_uniform(0.3, 0.5, (len(env_ids), 1), device=self.device)
         loc_noise_y = sample_uniform(-0.3, 0.3, (len(env_ids), 1), device=self.device)
-        loc_noise_z = sample_uniform(0.1, 0.3, (len(env_ids), 1), device=self.device)
+        loc_noise_z = sample_uniform(0.3, 0.5, (len(env_ids), 1), device=self.device)
         loc_noise = torch.cat([loc_noise_x, loc_noise_y, loc_noise_z], dim=-1)
         object_default_state = torch.zeros_like(self._robot.data.root_state_w[env_ids], device=self.device)
         object_default_state[:, :3] += loc_noise + self.scene.env_origins[env_ids, :3]
     
         # object(=target point) reset : Rotation
         rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
-        object_default_state[:, 3:7] = self._robot.data.body_state_w[env_ids, self._robot_entity.body_ids[0], 3:7]
-        # object_default_state[:, 3:7] = randomize_rotation(
-        #     rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
-        # )
+        # object_default_state[:, 3:7] = self._robot.data.body_state_w[env_ids, self._robot_entity.body_ids[0], 3:7]
+        object_default_state[:, 3:7] = randomize_rotation(
+            rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
+        )
 
         # Convert from World to Root Frame
         root_pos_w = self._robot.data.root_state_w[env_ids, :7]
@@ -270,17 +267,15 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # ========= TCP 업데이트 ===========
         root_pos_w = self._robot.data.root_state_w[env_ids, :7]
-        lfinger_pos_w = self._robot.data.body_state_w[env_ids, self.left_finger_link_idx, :7]
-        rfinger_pos_w = self._robot.data.body_state_w[env_ids, self.right_finger_link_idx, :7]
+        hand_pos_w = self._robot.data.body_state_w[env_ids, self.hand_link_idx, :7]
         # data for joint
         self.robot_joint_pos[env_ids] = self._robot.data.joint_pos[env_ids]
         self.robot_joint_vel[env_ids] = self._robot.data.joint_vel[env_ids]
         # data for TCP (world & root Frame)
-        self.robot_grasp_pos_w[env_ids] = calculate_robot_tcp(lfinger_pos_w, rfinger_pos_w, self.tcp_offset[env_ids])
-        robot_grasp_loc_b, robot_grasp_rot_b = subtract_frame_transforms(
-            root_pos_w[:, :3], root_pos_w[:, 3:7], self.robot_grasp_pos_w[env_ids, :3], self.robot_grasp_pos_w[env_ids, 3:7])
-        self.robot_grasp_pos_b[env_ids] = torch.cat((robot_grasp_loc_b, robot_grasp_rot_b), dim=1)
-
+        self.robot_grasp_pos_b[env_ids] = calculate_robot_tcp(hand_pos_w, root_pos_w, self.tcp_offset_hand[env_ids])
+        self.robot_grasp_pos_w[env_ids, 3:7] = quat_mul(root_pos_w[:, 3:7], self.robot_grasp_pos_b[env_ids, 3:7])
+        self.robot_grasp_pos_w[env_ids, :3] = root_pos_w[:, :3] + quat_apply(root_pos_w[:, 3:7], self.robot_grasp_pos_b[:, :3])
+        
         # ========= Position Error 업데이트 =========
         # Location
         self.prev_loc_error[env_ids] = self.loc_error[env_ids]
@@ -295,6 +290,32 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.via_marker.visualize(self.processed_actions[:, :3] + self.robot_grasp_pos_w[:, :3])
         self.tcp_marker.visualize(self.robot_grasp_pos_w[:, :3], self.robot_grasp_pos_w[:, 3:7])
         self.target_marker.visualize(self.goal_pos_w[:, :3], self.goal_pos_w[:, 3:7])
+    
+
+    def compute_frame_jacobian(self, jacobian_w: torch.Tensor) -> torch.Tensor:
+        """Computes the geometric Jacobian of the target frame in the root frame.
+
+        This function accounts for the target frame offset and applies the necessary transformations to obtain
+        the right Jacobian from the parent body Jacobian.
+        """
+        # ========= 데이터 세팅 =========
+        jacobian_b = jacobian_w.clone()
+        root_quat = self._robot.data.root_quat_w
+        root_rot_matrix = matrix_from_quat(quat_inv(root_quat))
+
+        # ====== Hand Link의 Root Frame에서의 Jacobian 계산 ======
+        jacobian_b[:, :3, :] = torch.bmm(root_rot_matrix, jacobian_b[:, :3, :])
+        jacobian_b[:, 3:, :] = torch.bmm(root_rot_matrix, jacobian_b[:, 3:, :])
+
+        # ====== TCP의 Offset을 고려한 Frame Jacobian 보정 ======
+        # ====== v_b = v_a + w * r_{ba} Kinematics 관계 반영 ======
+        s_offset = compute_skew_symmetric_matrix(self.tcp_offset_hand[:, :3])
+        jacobian_b[:, :3, :] += torch.bmm(-s_offset, jacobian_b[:, 3:, :])
+        jacobian_b[:, 3:, :] = torch.bmm(matrix_from_quat(self.tcp_offset_hand[:, 3:7]), jacobian_b[:, 3:, :])
+
+        return jacobian_b
+
+
         
 
 @torch.jit.script
@@ -304,48 +325,59 @@ def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
     )
 
 @torch.jit.script
-def calculate_robot_tcp(lfinger_pose_w: torch.Tensor, 
-                        rfinger_pose_w: torch.Tensor, 
-                        offset: torch.Tensor) -> torch.Tensor:
-    tcp_loc_w = (lfinger_pose_w[:, :3] + rfinger_pose_w[:, :3]) / 2.0 + quat_apply(lfinger_pose_w[:, 3:7], offset)
+def calculate_robot_tcp(hand_pos_w: torch.Tensor,
+                        root_pos_w: torch.Tensor,
+                        offset: torch.Tensor | None) -> torch.Tensor:
+    
+    hand_loc_b, hand_rot_b = subtract_frame_transforms(
+        root_pos_w[:, :3], root_pos_w[:, 3:7], hand_pos_w[:, :3], hand_pos_w[:, 3:7])
 
-    return torch.cat((tcp_loc_w, lfinger_pose_w[:, 3:7]), dim=1)
+    if offset is not None:
+        tcp_loc_b, tcp_rot_b = combine_frame_transforms(
+            hand_loc_b, hand_rot_b, offset[:, :3], offset[:, 3:7])
+    else:
+        tcp_loc_b = hand_loc_b; tcp_rot_b = hand_rot_b
+    
+
+    return torch.cat((tcp_loc_b, tcp_rot_b), dim=1)
 
 @torch.jit.script
-def compute_delta_rot(base_angle: torch.Tensor, delta_angle: torch.Tensor) -> torch.Tensor:
+def compute_target_rot(base_angle: torch.Tensor, delta_angle: torch.Tensor) -> torch.Tensor:
         """
             Compute Delta Rotation :
                 base_angle: (N, 4) quaternion form
                 target_angle : (N, 3) euler angle form
             
-                -> we calculate target_delta_rotation by quaternion form
+                -> we calculate target_rotation by quaternion form in root frame
         """
         delta_rot_axis = delta_angle
         delta_rot_angle = torch.norm(delta_rot_axis, dim=-1)
         delta_rot_axis_normalized = delta_rot_axis / (delta_rot_angle.unsqueeze(-1) + 1e-6)
         delta_rot = quat_from_angle_axis(delta_rot_angle, delta_rot_axis_normalized)
-        target_delta_rot_b = quat_mul(delta_rot, base_angle)
-        return target_delta_rot_b
+        target_rot_b = quat_mul(delta_rot, base_angle)
+        return target_rot_b
+
 
 @torch.jit.script
 def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
-    """
-        주어진 3D 벡터 배치를 왜대칭 행렬 배치로 변환합니다.
-
-        이 함수는 외적 연산(a x b)을 행렬 곱(S(a) * b)으로 변환하는 데 사용됩니다.
-
+    """Computes the skew-symmetric matrix of a vector.
         Args:
-            vec: (N, 3) 형태의 3D 벡터 텐서. N은 배치 크기입니다.
+            vec: The input vector. Shape is (3,) or (N, 3).
 
         Returns:
-            (N, 3, 3) 형태의 왜대칭 행렬 텐서.
-    """
-    batch_size = vec.shape[0]
-    device = vec.device
-    dtype = vec.dtype
+            The skew-symmetric matrix. Shape is (1, 3, 3) or (N, 3, 3).
 
-    S = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
-    
+        Raises:
+            ValueError: If input tensor is not of shape (..., 3).
+    """
+    # check input is correct
+    if vec.shape[-1] != 3:
+        raise ValueError(f"Expected input vector shape mismatch: {vec.shape} != (..., 3).")
+    # unsqueeze the last dimension
+    if vec.ndim == 1:
+        vec = vec.unsqueeze(0)
+
+    S = torch.zeros(vec.shape[0], 3, 3, device=vec.device, dtype=vec.dtype)
     S[:, 0, 1] = -vec[:, 2]
     S[:, 0, 2] =  vec[:, 1]
     S[:, 1, 0] =  vec[:, 2]
