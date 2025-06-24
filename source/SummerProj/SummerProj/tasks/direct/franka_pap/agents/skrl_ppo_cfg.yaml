@@ -8,7 +8,6 @@ models:
     # FrankaGaussianPolicy의 __init__에 전달할 파라미터들
     encoder_features: [256, 128]
     policy_features: [64]
-    clip_actions: False
     max_log_std: 0.0
     clip_actions: False
     clip_log_std: True

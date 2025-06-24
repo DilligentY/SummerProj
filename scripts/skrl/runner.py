@@ -5,7 +5,7 @@ import copy
 import hydra
 from omegaconf import DictConfig
 
-# skrl의 원래 Runner와 필요한 클래스들을 임포트
+# skrl의 원래 Runner와 필요한 클래스들을 Import
 from skrl import logger
 from skrl.utils.runner.torch import Runner
 from skrl.models.torch import Model
