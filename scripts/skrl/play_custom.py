@@ -68,8 +68,6 @@ import torch
 import skrl
 from packaging import version
 
-from SummerProj.tasks.direct.franka_pap.agents.runners_factory import create_ppo_agent
-
 # check for minimum supported skrl version
 SKRL_VERSION = "1.4.2"
 if version.parse(skrl.__version__) < version.parse(SKRL_VERSION):
@@ -94,6 +92,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
 
 import SummerProj.tasks  # noqa: F401
+from runner import AISLRunner
 
 # config shortcuts
 algorithm = args_cli.algorithm.lower()
@@ -165,12 +164,12 @@ def main():
     experiment_cfg["trainer"]["close_environment_at_exit"] = False
     experiment_cfg["agent"]["experiment"]["write_interval"] = 0  # don't log to TensorBoard
     experiment_cfg["agent"]["experiment"]["checkpoint_interval"] = 0  # don't generate checkpoints
-    agent = create_ppo_agent(env, agent_cfg=experiment_cfg)
+    runner = AISLRunner(env, experiment_cfg)
     # runner = Runner(env, experiment_cfg)
 
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
-    agent.load(resume_path)
-    agent.set_running_mode("eval")
+    runner.agent.load(resume_path)
+    runner.agent.set_running_mode("eval")
     # runner.agent.load(resume_path)
     # # set agent to evaluation mode
     # runner.agent.set_running_mode("eval")
@@ -185,7 +184,7 @@ def main():
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            outputs = agent.act(obs, timestep=0, timesteps=0)
+            outputs = runner.agent.act(obs, timestep=0, timesteps=0)
             # - multi-agent (deterministic) actions
             if hasattr(env, "possible_agents"):
                 actions = {a: outputs[-1][a].get("mean_actions", outputs[0][a]) for a in env.possible_agents}

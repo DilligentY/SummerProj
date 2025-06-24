@@ -1,15 +1,14 @@
 seed: 42
-
 # Models are instantiated using skrl's model instantiator utility
 # https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
 models:
-  separate: True # for Multi Agent RL
+  separate: True
   policy:  # see gaussian_model parameters
     _target_: SummerProj.tasks.direct.franka_pap.models.custom_net.FrankaGaussianPolicy
     # FrankaGaussianPolicy의 __init__에 전달할 파라미터들
     encoder_features: [256, 128]
     policy_features: [64]
-    clip_actions: False # 여기서 직접 제어 가능
+    clip_actions: False
     max_log_std: 0.0
     clip_actions: False
     clip_log_std: True
@@ -19,7 +18,7 @@ models:
   value:  # see deterministic_model parameters
     _target_: SummerProj.tasks.direct.franka_pap.models.custom_net.FrankaValue
     # FrankaValue의 __init__에 전달할 파라미터들
-    encoder_features: [256, 128] # 인코더 구조는 여기서 정의
+    encoder_features: [256, 128]
     value_features: [64]
     clip_actions: False
 
