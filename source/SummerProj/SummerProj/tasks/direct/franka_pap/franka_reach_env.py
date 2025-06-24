@@ -111,9 +111,9 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         # ========= Inverse Kinematics =========
         if robot_grasp_pos_b[:, 3:7].norm() != 0:
-            # Hand 기준 Jacobian Matrix 계산
+            # World Frame에서 Hand의 Jacobian Matrix 계산
             jacobian_w = self._robot.root_physx_view.get_jacobians()[:, self.jacobi_idx, :, :self.num_active_joints]
-            # TCP Frame으로 Jacobian 변환
+            # Root Frame에서 TCP의 Jacobian Matrix 계산
             jacobian_t = self.compute_frame_jacobian(hand_rot_b, jacobian_w)
             # Target Joint Angle 계산
             joint_pos_des = self.ik_controller.compute(robot_grasp_pos_b[:, :3], 
@@ -152,26 +152,26 @@ class FrankaReachEnv(FrankaBaseEnv):
         action_norm = torch.norm(self.actions[:, 6:13], dim=1)
 
         # =========== Approach Reward (1): Potential Based Reward Shaping =============
-        gamma = 1.0
-        phi_s_prime = -self.loc_error
-        phi_s = -self.prev_loc_error
-
-        phi_s_prime_rot = -self.rot_error
-        phi_s_rot = -self.prev_rot_error
-
-        r_pos = gamma*phi_s_prime - phi_s 
-        r_rot = gamma*phi_s_prime_rot - phi_s_rot
-
-        # =========== Approach Reward (1-1): Potential Based Reward Shaping by log scale =============
         # gamma = 1.0
-        # phi_s_prime = -torch.log(3 * self.loc_error + 1)
-        # phi_s = -torch.log(3 * self.prev_loc_error + 1)
+        # phi_s_prime = -self.loc_error
+        # phi_s = -self.prev_loc_error
 
-        # phi_s_prime_rot = -torch.log(3 * self.rot_error + 1)
-        # phi_s_rot = -torch.log(3 * self.prev_rot_error + 1)
+        # phi_s_prime_rot = -self.rot_error
+        # phi_s_rot = -self.prev_rot_error
 
         # r_pos = gamma*phi_s_prime - phi_s 
         # r_rot = gamma*phi_s_prime_rot - phi_s_rot
+
+        # =========== Approach Reward (1-1): Potential Based Reward Shaping by log scale =============
+        gamma = 1.0
+        phi_s_prime = -torch.log(self.cfg.alpha * self.loc_error + 1)
+        phi_s = -torch.log(self.cfg.alpha * self.prev_loc_error + 1)
+
+        phi_s_prime_rot = -torch.log(self.cfg.alpha * self.rot_error + 1)
+        phi_s_rot = -torch.log(self.cfg.alpha * self.prev_rot_error + 1)
+
+        r_pos = gamma*phi_s_prime - phi_s 
+        r_rot = gamma*phi_s_prime_rot - phi_s_rot
 
         # ========== Approach Reward (2): Distance Reward Shaping ===========
         # r_pos = 1 - torch.tanh(self.loc_error/1.5)
@@ -283,7 +283,6 @@ class FrankaReachEnv(FrankaBaseEnv):
         self.prev_loc_error[env_ids] = self.loc_error[env_ids]
         self.loc_error[env_ids] = torch.norm(
             self.robot_grasp_pos_b[env_ids, :3] - self.goal_pos_b[env_ids, :3], dim=1)
-        # print(f"Distnace : {self.loc_error[0]}")
         # Rotation
         self.prev_rot_error[env_ids] = self.rot_error[env_ids]
         self.rot_error[env_ids] = quat_error_magnitude(self.robot_grasp_pos_b[env_ids, 3:7], self.goal_pos_b[env_ids, 3:7])
