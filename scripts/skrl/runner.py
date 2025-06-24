@@ -12,7 +12,7 @@ from skrl.models.torch import Model
 
 
 class AISLRunner(Runner):
-
+    # 기존 SKRL에서 제공하는 Runner Class를 오버라이딩. Custom Model에 대한 처리만 따로 수행
     def _generate_models(self, env, cfg: Mapping[str, Any]) -> Mapping[str, Mapping[str, Model]]:
         multi_agent = False
         device = env.device
@@ -47,9 +47,6 @@ class AISLRunner(Runner):
                         model_config["device"] = device
                         
                         # hydra.utils.instantiate는 DictConfig를 받으므로 변환
-                        if not isinstance(model_config, DictConfig):
-                            model_config = hydra.utils.instantiate({"_target_": "omegaconf.OmegaConf.create", "_val": model_config})
-
                         models[agent_id][role] = hydra.utils.instantiate(model_config)
                     else:
                         # _target_이 없다면, 원래 SKRL에서 제공하는 Runner 클래스 그대로 사용
@@ -66,7 +63,14 @@ class AISLRunner(Runner):
                             observation_space=observation_spaces[agent_id],
                             action_space=action_spaces[agent_id],
                             device=device,
-                            **self._process_cfg(model_config)) 
+                            **self._process_cfg(model_config))
+
+                for role, model in models["agent"].items():
+                         if hasattr(model, "init_state_dict"):
+                             model.init_state_dict(role)
+                
+                return models
+
             else: # shared models
                 raise NotImplementedError("Shared models are not implemented in this custom runner example.")
                     
