@@ -139,7 +139,6 @@ class FrankaReachEnv(FrankaBaseEnv):
         # ===== Target Torque 버퍼에 저장 =====
         self._robot.set_joint_effort_target(des_torque, joint_ids=self.joint_idx)
         
-
     def _get_dones(self):
         self._compute_intermediate_values()
         self.is_reach = torch.logical_and(self.loc_error < 1e-2, self.rot_error < 1e-1)
@@ -172,15 +171,6 @@ class FrankaReachEnv(FrankaBaseEnv):
 
         r_pos = gamma*phi_s_prime - phi_s 
         r_rot = gamma*phi_s_prime_rot - phi_s_rot
-
-        # ========== Approach Reward (2): Distance Reward Shaping ===========
-        # r_pos = 1 - torch.tanh(self.loc_error/1.5)
-        # r_rot = 1 - torch.tanh(self.rot_error/0.5)
-
-        # print(f"pos_error : {self.loc_error[0]}")
-        # print(f"pos_reward : {r_pos[0]}")
-        # print(f"rot_reward : {r_rot[0]}")
-
 
         # =========== Success Reward : Goal Reach ============
         r_success = self.is_reach.float()

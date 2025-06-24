@@ -8,9 +8,10 @@ from __future__ import annotations
 import isaaclab.sim as sim_utils
 from isaaclab.assets import  RigidObjectCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
-from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.sim import SimulationCfg
+from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.utils import configclass
+from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from .franka_base_env_cfg import FrankaBaseEnvCfg
 
@@ -19,9 +20,9 @@ from .franka_base_env_cfg import FrankaBaseEnvCfg
 class FrankaPapApproachEnvCfg(FrankaBaseEnvCfg):
     # env
     episode_length_s = 10.0
-    decimation = 5
-    action_space = 7
-    observation_space = 28
+    decimation = 10
+    action_space = 20
+    observation_space = 35
     state_space = 0
 
     # simulation
@@ -40,7 +41,7 @@ class FrankaPapApproachEnvCfg(FrankaBaseEnvCfg):
     # object
     object: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Object",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.0, 0.0], rot=[1, 0, 0, 0]),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.0, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
                 scale=(1.0, 1.0, 1.0),
@@ -54,31 +55,22 @@ class FrankaPapApproachEnvCfg(FrankaBaseEnvCfg):
                 ),
             ),
         )
-
-    # keypoints marker
-    # keypoints_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
-    #     prim_path="/Visuals/keypoint",
-    #     markers={
-    #     "cuboid": sim_utils.CuboidCfg(
-    #         size=(0.01, 0.01, 0.01),
-    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
-    #         ),
-    #     }    
-    # )
-
-    # # target keypoints marker
-    # target_points_cfg: VisualizationMarkersCfg = CUBOID_MARKER_CFG.replace(
-    #     prim_path="/Visuals/keypoint",
-    #     markers={
-    #     "cuboid": sim_utils.CuboidCfg(
-    #         size=(0.01, 0.01, 0.01),
-    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0),
-    #                                                     opacity=0.1),
-    #         ),
-    #     }    
-    # )
+    
+    # goal marker
+    goal_pos_marker_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+        prim_path="Visuals/goal_marker",
+        markers={
+        "frame": sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
+            scale=(0.1, 0.1, 0.1),
+            )
+        }
+    )
+    
 
     # reward hyperparameter
-    alpha, beta = 10.0, 4.0
-    w_pos = 15.0
-    w_penalty = 0.5
+    alpha, beta = 3.0, 4.0
+    w_pos = 50.0
+    w_rot = 25.0
+    w_penalty = 0.01
+    w_success = 10.0
