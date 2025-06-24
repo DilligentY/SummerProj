@@ -1,35 +1,27 @@
-_target_: SummerProj.tasks.direct.franka_pap.agents.runners_factory.create_franka_ppo_runner
-
 seed: 42
 
 # Models are instantiated using skrl's model instantiator utility
 # https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
 models:
-  separate: False # for Multi Agent RL
+  separate: True # for Multi Agent RL
   policy:  # see gaussian_model parameters
-    class: GaussianMixin
+    _target_: SummerProj.tasks.direct.franka_pap.models.custom_net.FrankaGaussianPolicy
+    # FrankaGaussianPolicy의 __init__에 전달할 파라미터들
+    encoder_features: [256, 128]
+    policy_features: [64]
+    clip_actions: False # 여기서 직접 제어 가능
+    max_log_std: 0.0
     clip_actions: False
     clip_log_std: True
     min_log_std: -20.0
     max_log_std: 2.0
-    initial_log_std: 0.0
-    
-    network:
-      - name: net
-        input: STATES
-        layers: [256, 256]
-        activations: elu
-    output: ACTIONS
 
   value:  # see deterministic_model parameters
-    class: DeterministicMixin
+    _target_: SummerProj.tasks.direct.franka_pap.models.custom_net.FrankaValue
+    # FrankaValue의 __init__에 전달할 파라미터들
+    encoder_features: [256, 128] # 인코더 구조는 여기서 정의
+    value_features: [64]
     clip_actions: False
-    network:
-      - name: net
-        input: STATES
-        layers: [256, 256]
-        activations: elu
-    output: ONE
 
 
 # Rollout memory

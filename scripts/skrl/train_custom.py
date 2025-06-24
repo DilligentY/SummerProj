@@ -102,7 +102,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import SummerProj.tasks  # noqa: F401
-
+from runner import AISLRunner
 
 
 # config shortcuts
@@ -185,14 +185,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # ============= Custom Agent & Trainer 생성 ===============
     print("[INFO] Instantiating trainer and agent via custom factory...")
-    trainer, agent = hydra.utils.instantiate(agent_cfg, env=env)
+    runner = AISLRunner(env, agent_cfg)
 
     # Checkpoint 로드
     if resume_path:
         print(f"[INFO] Loading model checkpoint from: {resume_path}")
-        agent.load(resume_path)
+        runner.agent.load(resume_path)
     
-    trainer.train()
+    runner.run()
 
     # close the simulator
     env.close()
