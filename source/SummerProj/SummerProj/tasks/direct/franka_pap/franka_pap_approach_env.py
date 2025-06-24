@@ -61,7 +61,8 @@ class FrankaPaPApproachchEnv(FrankaBaseEnv):
 
     def _setup_scene(self):
         super()._setup_scene()
-        self.object = RigidObject(self.cfg.object)
+        self._object = RigidObject(self.cfg.object)
+        self.scene.rigid_objects["object"] = self._object
 
     # ================= IK + Controller Gain =================
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -234,8 +235,8 @@ class FrankaPaPApproachchEnv(FrankaBaseEnv):
         loc_noise_y = sample_uniform(-0.3, 0.3, (len(env_ids), 1), device=self.device)
         loc_noise_z = sample_uniform(0.3, 0.5, (len(env_ids), 1), device=self.device)
         loc_noise = torch.cat([loc_noise_x, loc_noise_y, loc_noise_z], dim=-1)
-        object_default_state = torch.zeros_like(self._robot.data.root_state_w[env_ids], device=self.device)
-        object_default_state[:, :3] += loc_noise + self.scene.env_origins[env_ids, :3]
+        object_default_state = self._object.data.root_state_w[env_ids]
+        object_default_state[:, :3] += loc_noise
     
         # object(=target point) reset : Rotation
         rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
@@ -287,10 +288,11 @@ class FrankaPaPApproachchEnv(FrankaBaseEnv):
     
 
     def compute_frame_jacobian(self, parent_rot_b, jacobian_w: torch.Tensor) -> torch.Tensor:
-        """Computes the geometric Jacobian of the target frame in the root frame.
-
-        This function accounts for the target frame offset and applies the necessary transformations to obtain
-        the right Jacobian from the parent body Jacobian.
+        """
+            Computes the geometric Jacobian of the target frame in the root frame.
+            
+            This function accounts for the target frame offset and applies the necessary transformations to obtain
+            the right Jacobian from the parent body Jacobian.
         """
         # ========= 데이터 세팅 =========
         jacobian_b = jacobian_w.clone()
@@ -338,24 +340,26 @@ def calculate_robot_tcp(hand_pos_w: torch.Tensor,
 
 @torch.jit.script
 def compute_target_rot(base_angle: torch.Tensor, delta_angle: torch.Tensor) -> torch.Tensor:
-        """
-            Compute Delta Rotation :
-                base_angle: (N, 4) quaternion form
-                target_angle : (N, 3) euler angle form
-            
-                -> we calculate target_rotation by quaternion form in root frame
-        """
-        delta_rot_axis = delta_angle
-        delta_rot_angle = torch.norm(delta_rot_axis, dim=-1)
-        delta_rot_axis_normalized = delta_rot_axis / (delta_rot_angle.unsqueeze(-1) + 1e-6)
-        delta_rot = quat_from_angle_axis(delta_rot_angle, delta_rot_axis_normalized)
-        target_rot_b = quat_mul(delta_rot, base_angle)
-        return target_rot_b
+    """
+        Compute Delta Rotation :
+            base_angle: (N, 4) quaternion form
+            target_angle : (N, 3) euler angle form
+        
+            -> we calculate target_rotation by quaternion form in root frame
+    """
+    delta_rot_axis = delta_angle
+    delta_rot_angle = torch.norm(delta_rot_axis, dim=-1)
+    delta_rot_axis_normalized = delta_rot_axis / (delta_rot_angle.unsqueeze(-1) + 1e-6)
+    delta_rot = quat_from_angle_axis(delta_rot_angle, delta_rot_axis_normalized)
+    target_rot_b = quat_mul(delta_rot, base_angle)
+    return target_rot_b
 
 
 @torch.jit.script
 def compute_skew_symmetric_matrix(vec: torch.Tensor) -> torch.Tensor:
-    """Computes the skew-symmetric matrix of a vector.
+    """
+        Computes the skew-symmetric matrix of a vector.
+        
         Args:
             vec: The input vector. Shape is (3,) or (N, 3).
 

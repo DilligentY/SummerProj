@@ -93,26 +93,6 @@ class FrankaBaseEnv(DirectRLEnv):
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
-    # def step(self, action: torch.Tensor) -> VecEnvStepReturn:
-    #     # From Superclass (DirectRLEnv)
-    #     action.to(self.device)
-
-    #     # add action noies
-    #     if self.cfg.action_noise_model:
-    #         action = self._action_noise_model.apply(action)
-        
-    #     # process actions
-    #     self._pre_physics_step(action)
-
-    #     # check if we need to do rendering within the physics loop
-    #     # note: checked here once to avoid multiple checks within the loop
-    #     is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors()
-
-    #     # perform physics stepping
-    #     for _ in range(self.cfg.decimation):
-    #         pass
-
     
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
